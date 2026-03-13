@@ -185,3 +185,7 @@ API Key:       (none — no authentication)
 - Smaller queue capacity = better cache locality
 - Memory mode only
 - Short ACK timeout
+
+## Advanced: Autoscaling
+
+When running on Kubernetes, BoltQ read replicas (non-voter nodes) can be autoscaled using HPA. This is configured in the deployment manifests. For more details, see [Deployment Guide](./deployment.md#autoscaling).

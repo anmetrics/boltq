@@ -13,6 +13,7 @@ metadata:
     role: voter
 spec:
   clusterIP: None  # Headless — each pod gets DNS: boltq-voters-{0,1,2}.boltq-voters
+  publishNotReadyAddresses: true
   ports:
     - name: http
       port: 9090
@@ -45,6 +46,7 @@ spec:
       containers:
         - name: boltq
           image: boltq:latest
+          imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 9090
               name: http
@@ -67,14 +69,12 @@ spec:
               value: /var/lib/boltq/raft
             # Node ID auto-generated from hostname (boltq-voters-0, boltq-voters-1, etc.)
             # Raft address uses the headless service DNS.
-            - name: POD_NAME
+            - name: POD_IP
               valueFrom:
                 fieldRef:
-                  fieldPath: metadata.name
-            - name: BOLTQ_NODE_ID
-              value: "$(POD_NAME)"
+                  fieldPath: status.podIP
             - name: BOLTQ_RAFT_ADDR
-              value: "$(POD_NAME).boltq-voters:9100"
+              value: "$(POD_IP):9100"
             # First pod (ordinal 0) bootstraps the cluster.
             # Other pods use seeds to discover and join.
             - name: BOLTQ_SEEDS

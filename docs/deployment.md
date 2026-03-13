@@ -259,6 +259,50 @@ stringData:
   api-key: "your-secret-api-key"
 ```
 
+### Autoscaling
+
+BoltQ supports horizontal pod autoscaling for read replicas. This allows the cluster to automatically handle spikes in read traffic.
+
+#### Requirements
+- **Metrics Server**: Kubernetes must have the `metrics-server` installed to collect CPU/Memory metrics.
+  ```bash
+  kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+  ```
+
+#### Configuration
+The `boltq-replicas` deployment includes a `HorizontalPodAutoscaler` (HPA) that scales pods based on CPU utilization:
+
+```yaml
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: boltq-replicas-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: boltq-replicas
+  minReplicas: 2
+  maxReplicas: 20
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+```
+
+- **Min Replicas**: 2 (Ensures high availability)
+- **Max Replicas**: 20 (Upper limit for cost control)
+- **Target CPU**: 70% (Triggers scaling when average CPU exceeds this threshold)
+
+#### Manual Scaling
+You can also scale the replicas manually if needed:
+```bash
+kubectl scale deployment boltq-replicas --replicas=10
+```
+
 ## Production Checklist
 
 ### Before Deploy

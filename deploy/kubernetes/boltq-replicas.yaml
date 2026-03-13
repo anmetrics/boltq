@@ -14,6 +14,8 @@ metadata:
     app: boltq
     role: replica
 spec:
+  clusterIP: None  # Headless service for pod-to-pod DNS resolution
+  publishNotReadyAddresses: true
   ports:
     - name: http
       port: 9090
@@ -43,6 +45,7 @@ spec:
       containers:
         - name: boltq
           image: boltq:latest
+          imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 9090
               name: http
@@ -66,12 +69,12 @@ spec:
             - name: BOLTQ_RAFT_DIR
               value: /var/lib/boltq/raft
             # Node ID auto-generated from hostname (pod name)
-            - name: POD_NAME
+            - name: POD_IP
               valueFrom:
                 fieldRef:
-                  fieldPath: metadata.name
+                  fieldPath: status.podIP
             - name: BOLTQ_RAFT_ADDR
-              value: "$(POD_NAME).boltq-replicas:9100"
+              value: "$(POD_IP):9100"
             # Seeds: point to voter nodes
             - name: BOLTQ_SEEDS
               value: "boltq-voters-0.boltq-voters:9090,boltq-voters-1.boltq-voters:9090,boltq-voters-2.boltq-voters:9090"
