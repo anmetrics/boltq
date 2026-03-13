@@ -177,6 +177,32 @@ func (s *TCPServer) handlePing() protocol.Frame {
 	return s.okFrame([]byte(`{"status":"pong"}`))
 }
 
+// --- Messaging types ---
+
+type publishRequest struct {
+	Topic   string            `json:"topic"`
+	Payload json.RawMessage   `json:"payload"`
+	Headers map[string]string `json:"headers"`
+}
+
+type publishResponse struct {
+	ID    string `json:"id"`
+	Topic string `json:"topic"`
+}
+
+type consumeResponse struct {
+	ID        string            `json:"id"`
+	Topic     string            `json:"topic"`
+	Payload   json.RawMessage   `json:"payload"`
+	Headers   map[string]string `json:"headers,omitempty"`
+	Timestamp int64             `json:"timestamp"`
+	Retry     int               `json:"retry"`
+}
+
+func newMessage(topic string, payload json.RawMessage, headers map[string]string) *protocol.Message {
+	return protocol.NewMessage(topic, payload, headers)
+}
+
 // --- PUBLISH ---
 
 func (s *TCPServer) handlePublishTCP(frame protocol.Frame) protocol.Frame {

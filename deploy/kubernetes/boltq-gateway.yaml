@@ -1,0 +1,23 @@
+# BoltQ Gateway Service — routes traffic to both voters and replicas
+#
+# Clients connect to this single endpoint.
+# Writes: client gets NOT_LEADER error → redirects to leader automatically.
+# Reads: distributed across all healthy nodes.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: boltq
+  labels:
+    app: boltq
+spec:
+  type: LoadBalancer  # Change to ClusterIP if using ingress
+  ports:
+    - name: tcp
+      port: 9091
+      targetPort: 9091
+    - name: http
+      port: 9090
+      targetPort: 9090
+  selector:
+    app: boltq  # Matches both voters and replicas

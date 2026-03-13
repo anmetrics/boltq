@@ -3,7 +3,6 @@ package api
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"strings"
@@ -12,10 +11,10 @@ import (
 	"github.com/boltq/boltq/internal/broker"
 	"github.com/boltq/boltq/internal/cluster"
 	"github.com/boltq/boltq/internal/metrics"
-	"github.com/boltq/boltq/pkg/protocol"
 )
 
-// HTTPServer provides the REST API for the message broker.
+// HTTPServer provides the admin REST API (stats, metrics, health, cluster management).
+// All messaging operations (publish, consume, ack, nack) go through the TCP protocol.
 type HTTPServer struct {
 	broker      broker.BrokerIface
 	metrics     *metrics.Metrics
@@ -25,7 +24,7 @@ type HTTPServer struct {
 	server      *http.Server
 }
 
-// NewHTTPServer creates a new HTTP API server.
+// NewHTTPServer creates a new HTTP admin server.
 func NewHTTPServer(b broker.BrokerIface, m *metrics.Metrics, apiKey string) *HTTPServer {
 	s := &HTTPServer{
 		broker:  b,
@@ -38,20 +37,20 @@ func NewHTTPServer(b broker.BrokerIface, m *metrics.Metrics, apiKey string) *HTT
 }
 
 func (s *HTTPServer) registerRoutes() {
-	s.mux.HandleFunc("/publish", s.auth(s.handlePublish))
-	s.mux.HandleFunc("/publish/topic", s.auth(s.handlePublishTopic))
-	s.mux.HandleFunc("/consume", s.auth(s.handleConsume))
-	s.mux.HandleFunc("/ack", s.auth(s.handleAck))
-	s.mux.HandleFunc("/nack", s.auth(s.handleNack))
-	s.mux.HandleFunc("/subscribe", s.auth(s.handleSubscribe))
-	s.mux.HandleFunc("/stats", s.auth(s.handleStats))
-	s.mux.HandleFunc("/metrics", s.handleMetrics)
-	s.mux.HandleFunc("/health", s.handleHealth)
+	// Admin endpoints.
+	s.mux.HandleFunc("/overview", s.cors(s.auth(s.handleOverview)))
+	s.mux.HandleFunc("/stats", s.cors(s.auth(s.handleStats)))
+	s.mux.HandleFunc("/metrics", s.cors(s.handleMetrics))
+	s.mux.HandleFunc("/health", s.cors(s.handleHealth))
 
-	// Cluster management routes (always registered, return 404/error if clustering disabled).
-	s.mux.HandleFunc("/cluster/join", s.auth(s.handleClusterJoin))
-	s.mux.HandleFunc("/cluster/leave", s.auth(s.handleClusterLeave))
-	s.mux.HandleFunc("/cluster/status", s.auth(s.handleClusterStatus))
+	// Queue management.
+	s.mux.HandleFunc("/queues/purge", s.cors(s.auth(s.handlePurgeQueue)))
+	s.mux.HandleFunc("/dead-letters/purge", s.cors(s.auth(s.handlePurgeDeadLetters)))
+
+	// Cluster management routes.
+	s.mux.HandleFunc("/cluster/join", s.cors(s.auth(s.handleClusterJoin)))
+	s.mux.HandleFunc("/cluster/leave", s.cors(s.auth(s.handleClusterLeave)))
+	s.mux.HandleFunc("/cluster/status", s.cors(s.auth(s.handleClusterStatus)))
 }
 
 // Start starts the HTTP server on the given address.
@@ -63,7 +62,7 @@ func (s *HTTPServer) Start(addr string) error {
 		WriteTimeout: 30 * time.Second,
 		IdleTimeout:  60 * time.Second,
 	}
-	log.Printf("[http] listening on %s", addr)
+	log.Printf("[http] admin listening on %s", addr)
 	return s.server.ListenAndServe()
 }
 
@@ -73,6 +72,20 @@ func (s *HTTPServer) Shutdown() error {
 		return s.server.Close()
 	}
 	return nil
+}
+
+// cors middleware adds CORS headers for web admin dashboard.
+func (s *HTTPServer) cors(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-API-Key")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next(w, r)
+	}
 }
 
 // auth middleware checks API key if configured.
@@ -92,264 +105,52 @@ func (s *HTTPServer) auth(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// --- Publish (Work Queue) ---
+// --- Overview (combined dashboard data) ---
 
-type publishRequest struct {
-	Topic   string            `json:"topic"`
-	Payload json.RawMessage   `json:"payload"`
-	Headers map[string]string `json:"headers"`
-}
-
-type publishResponse struct {
-	ID    string `json:"id"`
-	Topic string `json:"topic"`
-}
-
-func (s *HTTPServer) handlePublish(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-
-	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20)) // 1MB limit
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "read body: "+err.Error())
-		return
-	}
-	defer r.Body.Close()
-
-	var req publishRequest
-	if err := json.Unmarshal(body, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid json: "+err.Error())
-		return
-	}
-
-	if req.Topic == "" {
-		writeError(w, http.StatusBadRequest, "topic is required")
-		return
-	}
-
-	msg := newMessage(req.Topic, req.Payload, req.Headers)
-	if err := s.broker.Publish(req.Topic, msg); err != nil {
-		if nle, ok := cluster.IsNotLeaderError(err); ok {
-			writeNotLeader(w, nle)
-			return
-		}
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-
-	s.metrics.IncPublished()
-	writeJSON(w, http.StatusOK, publishResponse{ID: msg.ID, Topic: msg.Topic})
-}
-
-// --- Publish (Pub/Sub Topic) ---
-
-func (s *HTTPServer) handlePublishTopic(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-
-	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "read body: "+err.Error())
-		return
-	}
-	defer r.Body.Close()
-
-	var req publishRequest
-	if err := json.Unmarshal(body, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid json: "+err.Error())
-		return
-	}
-
-	if req.Topic == "" {
-		writeError(w, http.StatusBadRequest, "topic is required")
-		return
-	}
-
-	msg := newMessage(req.Topic, req.Payload, req.Headers)
-	if err := s.broker.PublishTopic(req.Topic, msg); err != nil {
-		if nle, ok := cluster.IsNotLeaderError(err); ok {
-			writeNotLeader(w, nle)
-			return
-		}
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-
-	s.metrics.IncPublished()
-	writeJSON(w, http.StatusOK, publishResponse{ID: msg.ID, Topic: msg.Topic})
-}
-
-// --- Consume ---
-
-type consumeResponse struct {
-	ID        string            `json:"id"`
-	Topic     string            `json:"topic"`
-	Payload   json.RawMessage   `json:"payload"`
-	Headers   map[string]string `json:"headers,omitempty"`
-	Timestamp int64             `json:"timestamp"`
-	Retry     int               `json:"retry"`
-}
-
-func (s *HTTPServer) handleConsume(w http.ResponseWriter, r *http.Request) {
+func (s *HTTPServer) handleOverview(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 
-	topic := r.URL.Query().Get("topic")
-	if topic == "" {
-		writeError(w, http.StatusBadRequest, "topic query param is required")
-		return
+	stats := s.broker.Stats()
+	snap := s.metrics.Snapshot()
+
+	overview := map[string]interface{}{
+		"health": "ok",
+		"stats":  stats,
+		"metrics": map[string]int64{
+			"messages_published": snap.MessagesPublished,
+			"messages_consumed":  snap.MessagesConsumed,
+			"messages_acked":     snap.MessagesAcked,
+			"messages_nacked":    snap.MessagesNacked,
+			"retry_count":        snap.RetryCount,
+			"dead_letter_count":  snap.DeadLetterCount,
+			"raft_apply_count":   snap.RaftApplyCount,
+			"snapshot_count":     snap.SnapshotCount,
+			"leader_changes":     snap.LeaderChanges,
+		},
+		"uptime_ms": time.Since(s.startTime()).Milliseconds(),
 	}
 
-	// Non-blocking consume for HTTP (don't block the HTTP connection).
-	msg := s.broker.TryConsume(topic)
-	if msg == nil {
-		writeJSON(w, http.StatusNoContent, nil)
-		return
+	if s.clusterNode != nil {
+		overview["cluster"] = map[string]interface{}{
+			"enabled": true,
+			"cluster": s.clusterNode.Status(),
+		}
+	} else {
+		overview["cluster"] = map[string]interface{}{
+			"enabled": false,
+		}
 	}
 
-	s.metrics.IncConsumed()
-	writeJSON(w, http.StatusOK, consumeResponse{
-		ID:        msg.ID,
-		Topic:     msg.Topic,
-		Payload:   msg.Payload,
-		Headers:   msg.Headers,
-		Timestamp: msg.Timestamp,
-		Retry:     msg.Retry,
-	})
+	writeJSON(w, http.StatusOK, overview)
 }
 
-// --- Subscribe (SSE for pub/sub) ---
+var serverStartTime = time.Now()
 
-func (s *HTTPServer) handleSubscribe(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-
-	topic := r.URL.Query().Get("topic")
-	subscriberID := r.URL.Query().Get("id")
-	if topic == "" || subscriberID == "" {
-		writeError(w, http.StatusBadRequest, "topic and id query params required")
-		return
-	}
-
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		writeError(w, http.StatusInternalServerError, "streaming not supported")
-		return
-	}
-
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-
-	ch := s.broker.Subscribe(topic, subscriberID, 256)
-	defer s.broker.Unsubscribe(topic, subscriberID)
-
-	ctx := r.Context()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case msg, ok := <-ch:
-			if !ok {
-				return
-			}
-			data, _ := json.Marshal(consumeResponse{
-				ID:        msg.ID,
-				Topic:     msg.Topic,
-				Payload:   msg.Payload,
-				Headers:   msg.Headers,
-				Timestamp: msg.Timestamp,
-			})
-			fmt.Fprintf(w, "data: %s\n\n", data)
-			flusher.Flush()
-		}
-	}
-}
-
-// --- ACK ---
-
-type ackRequest struct {
-	ID string `json:"id"`
-}
-
-func (s *HTTPServer) handleAck(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-
-	var req ackRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid json")
-		return
-	}
-	defer r.Body.Close()
-
-	if req.ID == "" {
-		writeError(w, http.StatusBadRequest, "id is required")
-		return
-	}
-
-	if err := s.broker.Ack(req.ID); err != nil {
-		if nle, ok := cluster.IsNotLeaderError(err); ok {
-			writeNotLeader(w, nle)
-			return
-		}
-		if strings.Contains(err.Error(), "not found") {
-			writeError(w, http.StatusNotFound, err.Error())
-		} else {
-			writeError(w, http.StatusInternalServerError, err.Error())
-		}
-		return
-	}
-
-	s.metrics.IncAcked()
-	writeJSON(w, http.StatusOK, map[string]string{"status": "acked"})
-}
-
-// --- NACK ---
-
-func (s *HTTPServer) handleNack(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-
-	var req ackRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid json")
-		return
-	}
-	defer r.Body.Close()
-
-	if req.ID == "" {
-		writeError(w, http.StatusBadRequest, "id is required")
-		return
-	}
-
-	if err := s.broker.Nack(req.ID); err != nil {
-		if nle, ok := cluster.IsNotLeaderError(err); ok {
-			writeNotLeader(w, nle)
-			return
-		}
-		if strings.Contains(err.Error(), "not found") {
-			writeError(w, http.StatusNotFound, err.Error())
-		} else {
-			writeError(w, http.StatusInternalServerError, err.Error())
-		}
-		return
-	}
-
-	s.metrics.IncNacked()
-	writeJSON(w, http.StatusOK, map[string]string{"status": "nacked"})
+func (s *HTTPServer) startTime() time.Time {
+	return serverStartTime
 }
 
 // --- Stats ---
@@ -383,11 +184,82 @@ func (s *HTTPServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
+// --- Purge Queue ---
+
+func (s *HTTPServer) handlePurgeQueue(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req struct {
+		Queue string `json:"queue"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	defer r.Body.Close()
+	if req.Queue == "" {
+		writeError(w, http.StatusBadRequest, "queue is required")
+		return
+	}
+	count, err := s.broker.PurgeQueue(req.Queue)
+	if err != nil {
+		if nle, ok := cluster.IsNotLeaderError(err); ok {
+			writeJSON(w, http.StatusTemporaryRedirect, map[string]string{
+				"error": "not leader", "leader": nle.Leader, "leader_id": nle.LeaderID,
+			})
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"status": "purged", "queue": req.Queue, "purged_count": count,
+	})
+}
+
+// --- Purge Dead Letters ---
+
+func (s *HTTPServer) handlePurgeDeadLetters(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req struct {
+		Queue string `json:"queue"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	defer r.Body.Close()
+	if req.Queue == "" {
+		writeError(w, http.StatusBadRequest, "queue is required")
+		return
+	}
+	count, err := s.broker.PurgeDeadLetters(req.Queue)
+	if err != nil {
+		if nle, ok := cluster.IsNotLeaderError(err); ok {
+			writeJSON(w, http.StatusTemporaryRedirect, map[string]string{
+				"error": "not leader", "leader": nle.Leader, "leader_id": nle.LeaderID,
+			})
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"status": "purged", "queue": req.Queue, "purged_count": count,
+	})
+}
+
 // --- Cluster Join ---
 
 type clusterJoinRequest struct {
-	NodeID string `json:"node_id"`
-	Addr   string `json:"addr"`
+	NodeID   string `json:"node_id"`
+	Addr     string `json:"addr"`
+	NonVoter bool   `json:"non_voter"` // Join as read replica (non-voter)
 }
 
 func (s *HTTPServer) handleClusterJoin(w http.ResponseWriter, r *http.Request) {
@@ -409,11 +281,19 @@ func (s *HTTPServer) handleClusterJoin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "node_id and addr are required")
 		return
 	}
-	if err := s.clusterNode.Join(req.NodeID, req.Addr); err != nil {
+	var err error
+	role := "voter"
+	if req.NonVoter {
+		err = s.clusterNode.JoinNonVoter(req.NodeID, req.Addr)
+		role = "non-voter"
+	} else {
+		err = s.clusterNode.Join(req.NodeID, req.Addr)
+	}
+	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "joined", "node_id": req.NodeID})
+	writeJSON(w, http.StatusOK, map[string]string{"status": "joined", "node_id": req.NodeID, "role": role})
 }
 
 // --- Cluster Leave ---
@@ -485,16 +365,4 @@ func writeJSON(w http.ResponseWriter, code int, v interface{}) {
 
 func writeError(w http.ResponseWriter, code int, msg string) {
 	writeJSON(w, code, map[string]string{"error": msg})
-}
-
-func writeNotLeader(w http.ResponseWriter, nle *cluster.NotLeaderError) {
-	writeJSON(w, http.StatusTemporaryRedirect, map[string]string{
-		"error":     "not leader",
-		"leader":    nle.Leader,
-		"leader_id": nle.LeaderID,
-	})
-}
-
-func newMessage(topic string, payload json.RawMessage, headers map[string]string) *protocol.Message {
-	return protocol.NewMessage(topic, payload, headers)
 }

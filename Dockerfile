@@ -17,7 +17,7 @@ COPY configs/default.json /etc/boltq/config.json
 
 RUN mkdir -p /var/lib/boltq/data
 
-EXPOSE 9090 9091
+EXPOSE 9090 9091 9100
 
 ENTRYPOINT ["boltq-server"]
 CMD ["-config", "/etc/boltq/config.json"]

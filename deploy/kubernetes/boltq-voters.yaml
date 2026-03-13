@@ -1,0 +1,120 @@
+# BoltQ Voter Nodes — StatefulSet (3 or 5 fixed voters for Raft quorum)
+#
+# These nodes participate in Raft consensus (leader election + log replication).
+# Do NOT scale voters beyond 3 or 5 — it slows down consensus.
+# Use the replica deployment for horizontal scaling.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: boltq-voters
+  labels:
+    app: boltq
+    role: voter
+spec:
+  clusterIP: None  # Headless — each pod gets DNS: boltq-voters-{0,1,2}.boltq-voters
+  ports:
+    - name: http
+      port: 9090
+    - name: tcp
+      port: 9091
+    - name: raft
+      port: 9100
+  selector:
+    app: boltq
+    role: voter
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: boltq-voters
+spec:
+  serviceName: boltq-voters
+  replicas: 3  # Quorum: 3 voters (or 5 for larger clusters)
+  selector:
+    matchLabels:
+      app: boltq
+      role: voter
+  template:
+    metadata:
+      labels:
+        app: boltq
+        role: voter
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: boltq
+          image: boltq:latest
+          ports:
+            - containerPort: 9090
+              name: http
+            - containerPort: 9091
+              name: tcp
+            - containerPort: 9100
+              name: raft
+          env:
+            - name: BOLTQ_CLUSTER_ENABLED
+              value: "true"
+            - name: BOLTQ_HTTP_PORT
+              value: "9090"
+            - name: BOLTQ_TCP_PORT
+              value: "9091"
+            - name: BOLTQ_STORAGE_MODE
+              value: disk
+            - name: BOLTQ_DATA_DIR
+              value: /var/lib/boltq/data
+            - name: BOLTQ_RAFT_DIR
+              value: /var/lib/boltq/raft
+            # Node ID auto-generated from hostname (boltq-voters-0, boltq-voters-1, etc.)
+            # Raft address uses the headless service DNS.
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: BOLTQ_NODE_ID
+              value: "$(POD_NAME)"
+            - name: BOLTQ_RAFT_ADDR
+              value: "$(POD_NAME).boltq-voters:9100"
+            # First pod (ordinal 0) bootstraps the cluster.
+            # Other pods use seeds to discover and join.
+            - name: BOLTQ_SEEDS
+              value: "boltq-voters-0.boltq-voters:9090,boltq-voters-1.boltq-voters:9090,boltq-voters-2.boltq-voters:9090"
+          # Bootstrap init: only pod-0 bootstraps.
+          command:
+            - sh
+            - -c
+            - |
+              if [ "$POD_NAME" = "boltq-voters-0" ]; then
+                export BOLTQ_BOOTSTRAP=true
+              fi
+              exec boltq-server
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/boltq
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 9090
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 9090
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 10Gi

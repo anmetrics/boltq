@@ -108,6 +108,20 @@ func (q *Queue) Close() {
 	q.notEmpty.Broadcast()
 }
 
+// Purge removes all messages from the queue, returning the count of purged messages.
+func (q *Queue) Purge() int64 {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	count := atomic.LoadInt64(&q.size)
+	for i := uint64(0); i < uint64(count); i++ {
+		pos := (q.tail + i) & q.mask
+		q.buf[pos] = nil
+	}
+	q.tail = q.head
+	atomic.StoreInt64(&q.size, 0)
+	return count
+}
+
 // Drain returns all messages in the queue without removing them (for snapshots).
 func (q *Queue) Drain() []*protocol.Message {
 	q.mu.Lock()

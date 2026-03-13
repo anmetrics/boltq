@@ -7,37 +7,34 @@ export default defineNuxtPlugin((app) => {
     components,
     directives,
     theme: {
-      defaultTheme: 'light',
+      defaultTheme: 'boltqDark',
       themes: {
-        light: {
+        boltqDark: {
+          dark: true,
           colors: {
-            primary: '#2D9CDB',
-            secondary: '#6C757D',
-            accent: '#27AE60',
-            success: '#27AE60',
-            info: '#2D9CDB',
-            warning: '#F2994A',
-            error: '#EB5757',
-            background: '#F8F9FA',
-            surface: '#FFFFFF',
-            'on-surface': '#1A1A2E',
-            'sidebar-bg': '#F0F4F8',
+            background: '#0f1923',
+            surface: '#1a2735',
+            'surface-variant': '#1e3040',
+            primary: '#00d4aa',
+            secondary: '#4fc3f7',
+            accent: '#7c4dff',
+            success: '#66bb6a',
+            warning: '#ffa726',
+            error: '#ef5350',
+            info: '#42a5f5',
+            'on-background': '#e0e6ed',
+            'on-surface': '#c8d6e5',
           },
         },
       },
     },
     defaults: {
-      VBtn: {
-        variant: 'flat',
-        rounded: 'lg',
-      },
       VCard: {
         rounded: 'lg',
         elevation: 0,
       },
-      VTextField: {
-        variant: 'outlined',
-        density: 'compact',
+      VBtn: {
+        rounded: 'lg',
       },
       VChip: {
         rounded: 'lg',

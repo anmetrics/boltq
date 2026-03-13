@@ -1,0 +1,173 @@
+# BoltQ Production Cluster — Docker Compose
+#
+# Architecture:
+#   - 3 voter nodes (quorum) — fixed, handle consensus
+#   - N replica nodes (non-voter) — scale horizontally for read throughput
+#
+# Usage:
+#   docker compose up -d                    # Start 3-node quorum
+#   docker compose up -d --scale replica=5  # Add 5 read replicas
+#   docker compose up -d --scale replica=10 # Scale to 10 replicas
+#   docker compose down                     # Stop everything
+#
+# Ports exposed:
+#   node1: TCP=9091, HTTP=9090 (leader, bootstrap)
+#   node2: TCP=9093, HTTP=9092
+#   node3: TCP=9095, HTTP=9094
+#   replica: random ports (use docker compose ps to see)
+
+services:
+  # ─── Voter Node 1 (Bootstrap Leader) ───────────────────────────
+  node1:
+    image: boltq:latest
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    hostname: node1
+    environment:
+      BOLTQ_CLUSTER_ENABLED: "true"
+      BOLTQ_NODE_ID: node1
+      BOLTQ_RAFT_ADDR: "node1:9100"
+      BOLTQ_RAFT_DIR: /var/lib/boltq/raft
+      BOLTQ_BOOTSTRAP: "true"
+      BOLTQ_HTTP_PORT: "9090"
+      BOLTQ_TCP_PORT: "9091"
+      BOLTQ_DATA_DIR: /var/lib/boltq/data
+      BOLTQ_STORAGE_MODE: disk
+    ports:
+      - "9090:9090"  # HTTP admin
+      - "9091:9091"  # TCP messaging
+    volumes:
+      - node1-data:/var/lib/boltq
+    networks:
+      - boltq-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9090/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+
+  # ─── Voter Node 2 ──────────────────────────────────────────────
+  node2:
+    image: boltq:latest
+    hostname: node2
+    depends_on:
+      node1:
+        condition: service_healthy
+    environment:
+      BOLTQ_CLUSTER_ENABLED: "true"
+      BOLTQ_NODE_ID: node2
+      BOLTQ_RAFT_ADDR: "node2:9100"
+      BOLTQ_RAFT_DIR: /var/lib/boltq/raft
+      BOLTQ_SEEDS: "node1:9090"
+      BOLTQ_HTTP_PORT: "9090"
+      BOLTQ_TCP_PORT: "9091"
+      BOLTQ_DATA_DIR: /var/lib/boltq/data
+      BOLTQ_STORAGE_MODE: disk
+    ports:
+      - "9092:9090"
+      - "9093:9091"
+    volumes:
+      - node2-data:/var/lib/boltq
+    networks:
+      - boltq-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9090/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+
+  # ─── Voter Node 3 ──────────────────────────────────────────────
+  node3:
+    image: boltq:latest
+    hostname: node3
+    depends_on:
+      node1:
+        condition: service_healthy
+    environment:
+      BOLTQ_CLUSTER_ENABLED: "true"
+      BOLTQ_NODE_ID: node3
+      BOLTQ_RAFT_ADDR: "node3:9100"
+      BOLTQ_RAFT_DIR: /var/lib/boltq/raft
+      BOLTQ_SEEDS: "node1:9090,node2:9090"
+      BOLTQ_HTTP_PORT: "9090"
+      BOLTQ_TCP_PORT: "9091"
+      BOLTQ_DATA_DIR: /var/lib/boltq/data
+      BOLTQ_STORAGE_MODE: disk
+    ports:
+      - "9094:9090"
+      - "9095:9091"
+    volumes:
+      - node3-data:/var/lib/boltq
+    networks:
+      - boltq-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9090/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+
+  # ─── Read Replicas (Non-Voter, Auto-Scale) ─────────────────────
+  #
+  # Scale with: docker compose up -d --scale replica=N
+  # Each replica:
+  #   - Receives replicated data via Raft
+  #   - Does NOT participate in elections or quorum
+  #   - Handles read traffic (consume, stats)
+  #   - Auto-generates node ID from container hostname
+  #
+  replica:
+    image: boltq:latest
+    depends_on:
+      node1:
+        condition: service_healthy
+    environment:
+      BOLTQ_CLUSTER_ENABLED: "true"
+      BOLTQ_RAFT_ADDR: "0.0.0.0:9100"
+      BOLTQ_RAFT_DIR: /var/lib/boltq/raft
+      BOLTQ_SEEDS: "node1:9090,node2:9090,node3:9090"
+      BOLTQ_NON_VOTER: "true"
+      BOLTQ_HTTP_PORT: "9090"
+      BOLTQ_TCP_PORT: "9091"
+      BOLTQ_DATA_DIR: /var/lib/boltq/data
+      BOLTQ_STORAGE_MODE: disk
+    networks:
+      - boltq-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9090/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+
+  # ─── Load Balancer (Optional) ──────────────────────────────────
+  #
+  # HAProxy routes TCP traffic to all nodes.
+  # Writes are forwarded to leader via NOT_LEADER redirect.
+  # Reads are distributed across all nodes.
+  #
+  # lb:
+  #   image: haproxy:2.9-alpine
+  #   ports:
+  #     - "6379:6379"   # TCP entrypoint
+  #     - "8080:8080"   # HTTP admin entrypoint
+  #   volumes:
+  #     - ./haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+  #   networks:
+  #     - boltq-net
+  #   depends_on:
+  #     - node1
+  #     - node2
+  #     - node3
+
+volumes:
+  node1-data:
+  node2-data:
+  node3-data:
+
+networks:
+  boltq-net:
+    driver: bridge

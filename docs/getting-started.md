@@ -23,7 +23,7 @@ This produces two binaries in `bin/`:
 
 ```bash
 docker build -t boltq .
-docker run -p 9090:9090 boltq
+docker run -p 9090:9090 -p 9091:9091 boltq
 ```
 
 ## Quick Start
@@ -45,66 +45,33 @@ BOLTQ_STORAGE_MODE=disk BOLTQ_DATA_DIR=./data ./bin/boltq-server
 ./bin/boltq-server -config configs/default.json
 ```
 
-The server starts on `http://localhost:9090` by default.
+The server starts with TCP messaging on `:9091` and HTTP admin on `:9090`.
 
-### 2. Publish a Message
+### 2. Publish a Message (via Go SDK)
 
-```bash
-curl -X POST http://localhost:9090/publish \
-  -H "Content-Type: application/json" \
-  -d '{"topic":"email_jobs","payload":{"to":"user@example.com","subject":"Welcome"}}'
-```
+All messaging operations use the TCP binary protocol:
 
-Response:
-```json
-{"id":"a1b2c3d4e5f6...","topic":"email_jobs"}
-```
+```go
+import boltq "github.com/boltq/boltq/client/golang"
 
-### 3. Consume a Message
-
-```bash
-curl http://localhost:9090/consume?topic=email_jobs
-```
-
-Response:
-```json
-{
-  "id": "a1b2c3d4e5f6...",
-  "topic": "email_jobs",
-  "payload": {"to":"user@example.com","subject":"Welcome"},
-  "timestamp": 1706900000000000000,
-  "retry": 0
+client := boltq.New("localhost:9091")
+if err := client.Connect(); err != nil {
+    log.Fatal(err)
 }
+defer client.Close()
+
+id, err := client.Publish("email_jobs", map[string]string{
+    "to":      "user@example.com",
+    "subject": "Welcome",
+}, nil)
+fmt.Println("Published:", id)
 ```
 
-If no messages available, returns HTTP 204 No Content.
-
-### 4. Acknowledge the Message
+### 3. Consume and ACK (via CLI)
 
 ```bash
-curl -X POST http://localhost:9090/ack \
-  -H "Content-Type: application/json" \
-  -d '{"id":"a1b2c3d4e5f6..."}'
-```
-
-### 5. Check Server Status
-
-```bash
-# Health check
-curl http://localhost:9090/health
-
-# Broker statistics
-curl http://localhost:9090/stats
-
-# Prometheus metrics
-curl http://localhost:9090/metrics
-```
-
-## Using the CLI
-
-```bash
-# Set server URL (default: http://localhost:9090)
-export BOLTQ_URL=http://localhost:9090
+# Set TCP server address (default: localhost:9091)
+export BOLTQ_ADDR=localhost:9091
 
 # Publish
 ./bin/boltq publish -topic email_jobs -payload '{"to":"user@example.com"}'
@@ -117,12 +84,19 @@ export BOLTQ_URL=http://localhost:9090
 
 # NACK (triggers retry)
 ./bin/boltq nack -id <message_id>
+```
 
-# View stats
-./bin/boltq stats
+### 4. Check Server Status (HTTP Admin)
 
+```bash
 # Health check
-./bin/boltq health
+curl http://localhost:9090/health
+
+# Broker statistics
+curl http://localhost:9090/stats
+
+# Prometheus metrics
+curl http://localhost:9090/metrics
 ```
 
 ## Using the Go SDK
@@ -138,7 +112,11 @@ import (
 )
 
 func main() {
-    client := boltq.New("http://localhost:9090")
+    client := boltq.New("localhost:9091")
+    if err := client.Connect(); err != nil {
+        log.Fatal(err)
+    }
+    defer client.Close()
 
     // Publish a message
     id, err := client.Publish("email_jobs", map[string]string{
@@ -166,59 +144,15 @@ func main() {
 }
 ```
 
-## Using the Node.js SDK
-
-```javascript
-import { BoltQClient } from 'boltq-client'
-
-const queue = new BoltQClient('http://localhost:9090')
-
-// Publish
-const { id } = await queue.publish('email_jobs', {
-  to: 'user@example.com',
-  subject: 'Welcome'
-})
-console.log('Published:', id)
-
-// Consume
-const msg = await queue.consume('email_jobs')
-if (msg) {
-  console.log('Received:', msg.payload)
-  await queue.ack(msg.id)
-}
-```
-
-## Pub/Sub Example
-
-### Publish to a topic
-
-```bash
-curl -X POST http://localhost:9090/publish/topic \
-  -H "Content-Type: application/json" \
-  -d '{"topic":"user_signup","payload":{"user_id":"123","email":"new@user.com"}}'
-```
-
-### Subscribe via SSE
-
-```bash
-curl http://localhost:9090/subscribe?topic=user_signup&id=my-subscriber
-```
-
-This opens a Server-Sent Events stream. Messages appear as:
-
-```
-data: {"id":"...","topic":"user_signup","payload":{...},"timestamp":...}
-```
-
 ## Message Flow
 
 ```
-1. Producer publishes message
+1. Producer publishes message via TCP
 2. Message stored in WAL (if disk mode)
 3. Message pushed to in-memory ring buffer
-4. Consumer polls and receives message
+4. Consumer polls via TCP and receives message
 5. Message enters "pending" state with ACK deadline
-6. Consumer processes and ACKs the message
+6. Consumer processes and ACKs the message via TCP
 7. Message removed from pending
 
 On failure:
@@ -229,7 +163,6 @@ On failure:
 
 ## Next Steps
 
-- [API Reference](./api-reference.md) — Full HTTP API documentation
 - [Configuration](./configuration.md) — All configuration options
 - [Persistence](./persistence.md) — WAL and storage details
 - [Monitoring](./monitoring.md) — Prometheus metrics and health checks

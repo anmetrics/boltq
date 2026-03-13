@@ -15,6 +15,8 @@ type BrokerIface interface {
 	Nack(messageID string) error
 	GetPendingMessages() map[string]*PendingMessage
 	RequeueTimedOut(messageID string) error
+	PurgeQueue(topic string) (int64, error)
+	PurgeDeadLetters(topic string) (int64, error)
 	Stats() Stats
 	Close()
 }

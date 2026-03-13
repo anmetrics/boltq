@@ -72,6 +72,23 @@ func main() {
 	if v := os.Getenv("BOLTQ_CLUSTER_PEERS"); v != "" {
 		cfg.Cluster.Peers = strings.Split(v, ",")
 	}
+	if v := os.Getenv("BOLTQ_SEEDS"); v != "" {
+		cfg.Cluster.Seeds = strings.Split(v, ",")
+	}
+	if v := os.Getenv("BOLTQ_NON_VOTER"); v == "true" || v == "1" {
+		cfg.Cluster.NonVoter = true
+	}
+
+	// Auto-generate node ID from hostname if not set.
+	if cfg.Cluster.Enabled && cfg.Cluster.NodeID == "" {
+		hostname, _ := os.Hostname()
+		if hostname != "" {
+			cfg.Cluster.NodeID = hostname
+		} else {
+			cfg.Cluster.NodeID = fmt.Sprintf("node-%d", os.Getpid())
+		}
+		log.Printf("[server] auto-generated node_id: %s", cfg.Cluster.NodeID)
+	}
 
 	// Initialize storage.
 	var store storage.Storage
@@ -119,8 +136,8 @@ func main() {
 			log.Fatalf("[server] failed to start cluster: %v", err)
 		}
 		activeBroker = cluster.NewClusterBroker(raftNode, b)
-		log.Printf("[server] cluster mode enabled (node=%s, raft=%s, bootstrap=%v)",
-			cfg.Cluster.NodeID, cfg.Cluster.RaftAddr, cfg.Cluster.Bootstrap)
+		log.Printf("[server] cluster mode enabled (node=%s, raft=%s, bootstrap=%v, non_voter=%v)",
+			cfg.Cluster.NodeID, cfg.Cluster.RaftAddr, cfg.Cluster.Bootstrap, cfg.Cluster.NonVoter)
 	}
 
 	// Start scheduler.
@@ -154,11 +171,14 @@ func main() {
 
 	log.Printf("[server] BoltQ started (HTTP=%s, TCP=%s)", httpAddr, tcpAddr)
 
-	// Join an existing cluster if --join is specified.
-	if *joinAddr != "" && cfg.Cluster.Enabled {
+	// Resolve join target: --join flag > BOLTQ_JOIN_ADDR env > seeds.
+	seeds := resolveSeeds(*joinAddr, cfg.Cluster.Seeds)
+
+	// Auto-join cluster if not bootstrap and have seeds.
+	if cfg.Cluster.Enabled && !cfg.Cluster.Bootstrap && len(seeds) > 0 {
 		go func() {
-			time.Sleep(2 * time.Second) // give cluster time to start
-			joinCluster(*joinAddr, cfg.Cluster.NodeID, cfg.Cluster.RaftAddr)
+			time.Sleep(2 * time.Second) // give local raft time to start
+			discoverAndJoin(seeds, cfg.Cluster.NodeID, cfg.Cluster.RaftAddr, cfg.Cluster.NonVoter)
 		}()
 	}
 
@@ -167,6 +187,11 @@ func main() {
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	sig := <-sigCh
 	log.Printf("[server] received signal %s, shutting down...", sig)
+
+	// Graceful leave: remove self from cluster before shutting down.
+	if raftNode != nil && !cfg.Cluster.Bootstrap && len(seeds) > 0 {
+		gracefulLeave(seeds, cfg.Cluster.NodeID)
+	}
 
 	tcpServer.Shutdown()
 	httpServer.Shutdown()
@@ -178,22 +203,99 @@ func main() {
 	log.Println("[server] BoltQ stopped")
 }
 
-// joinCluster sends a join request to an existing cluster node's HTTP API.
-func joinCluster(leaderHTTP, nodeID, raftAddr string) {
-	body, _ := json.Marshal(map[string]string{
-		"node_id": nodeID,
-		"addr":    raftAddr,
-	})
-	url := fmt.Sprintf("http://%s/cluster/join", leaderHTTP)
-	resp, err := http.Post(url, "application/json", bytes.NewReader(body))
-	if err != nil {
-		log.Printf("[cluster] failed to join cluster via %s: %v", leaderHTTP, err)
-		return
+// resolveSeeds builds a list of seed addresses from --join flag, BOLTQ_JOIN_ADDR env, and config seeds.
+func resolveSeeds(joinFlag string, configSeeds []string) []string {
+	seen := make(map[string]bool)
+	var seeds []string
+
+	add := func(addr string) {
+		addr = strings.TrimSpace(addr)
+		if addr != "" && !seen[addr] {
+			seen[addr] = true
+			seeds = append(seeds, addr)
+		}
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusOK {
-		log.Printf("[cluster] successfully joined cluster via %s", leaderHTTP)
-	} else {
-		log.Printf("[cluster] join request returned status %d", resp.StatusCode)
+
+	// --join flag has highest priority.
+	add(joinFlag)
+
+	// BOLTQ_JOIN_ADDR env.
+	if v := os.Getenv("BOLTQ_JOIN_ADDR"); v != "" {
+		for _, s := range strings.Split(v, ",") {
+			add(s)
+		}
 	}
+
+	// Config seeds.
+	for _, s := range configSeeds {
+		add(s)
+	}
+
+	return seeds
+}
+
+// discoverAndJoin tries each seed address to find the leader and join the cluster.
+// Retries with exponential backoff — essential for orchestrated environments where
+// leader may not be ready yet.
+func discoverAndJoin(seeds []string, nodeID, raftAddr string, nonVoter bool) {
+	payload := map[string]interface{}{
+		"node_id":   nodeID,
+		"addr":      raftAddr,
+		"non_voter": nonVoter,
+	}
+	body, _ := json.Marshal(payload)
+
+	role := "voter"
+	if nonVoter {
+		role = "non-voter"
+	}
+
+	maxAttempts := 15
+	backoff := 2 * time.Second
+	client := &http.Client{Timeout: 5 * time.Second}
+
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		for _, seed := range seeds {
+			url := fmt.Sprintf("http://%s/cluster/join", seed)
+			resp, err := client.Post(url, "application/json", bytes.NewReader(body))
+			if err != nil {
+				continue // seed unreachable, try next
+			}
+			resp.Body.Close()
+
+			if resp.StatusCode == http.StatusOK {
+				log.Printf("[cluster] joined cluster via %s as %s (node=%s)", seed, role, nodeID)
+				return
+			}
+		}
+
+		log.Printf("[cluster] join attempt %d/%d failed on all seeds, retry in %s", attempt, maxAttempts, backoff)
+		time.Sleep(backoff)
+		backoff = backoff * 2
+		if backoff > 30*time.Second {
+			backoff = 30 * time.Second
+		}
+	}
+
+	log.Printf("[cluster] WARNING: failed to join cluster after %d attempts — node is running standalone", maxAttempts)
+}
+
+// gracefulLeave notifies the leader to remove this node before shutdown.
+func gracefulLeave(seeds []string, nodeID string) {
+	body, _ := json.Marshal(map[string]string{"node_id": nodeID})
+	client := &http.Client{Timeout: 5 * time.Second}
+
+	for _, seed := range seeds {
+		url := fmt.Sprintf("http://%s/cluster/leave", seed)
+		resp, err := client.Post(url, "application/json", bytes.NewReader(body))
+		if err != nil {
+			continue
+		}
+		resp.Body.Close()
+		if resp.StatusCode == http.StatusOK {
+			log.Printf("[cluster] gracefully left cluster via %s", seed)
+			return
+		}
+	}
+	log.Printf("[cluster] graceful leave failed — leader may need to remove node %s manually", nodeID)
 }

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"log"
 	"os"
 
 	boltq "github.com/boltq/boltq/client/golang"
@@ -15,9 +16,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	serverURL := os.Getenv("BOLTQ_URL")
-	if serverURL == "" {
-		serverURL = "http://localhost:9090"
+	serverAddr := os.Getenv("BOLTQ_ADDR")
+	if serverAddr == "" {
+		serverAddr = "localhost:9091"
 	}
 	apiKey := os.Getenv("BOLTQ_API_KEY")
 
@@ -25,7 +26,11 @@ func main() {
 	if apiKey != "" {
 		opts = append(opts, boltq.WithAPIKey(apiKey))
 	}
-	client := boltq.New(serverURL, opts...)
+	client := boltq.New(serverAddr, opts...)
+	if err := client.Connect(); err != nil {
+		log.Fatalf("failed to connect to %s: %v", serverAddr, err)
+	}
+	defer client.Close()
 
 	switch os.Args[1] {
 	case "server":
@@ -64,7 +69,7 @@ Commands:
   health    Check server health
 
 Environment:
-  BOLTQ_URL      Server URL (default: http://localhost:9090)
+  BOLTQ_ADDR     TCP server address (default: localhost:9091)
   BOLTQ_API_KEY  API key for authentication`)
 }
 

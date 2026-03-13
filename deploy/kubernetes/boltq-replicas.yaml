@@ -1,0 +1,117 @@
+# BoltQ Read Replicas — Deployment (auto-scale with HPA)
+#
+# Non-voter nodes that receive replicated data but don't participate in consensus.
+# Scale horizontally for read throughput without impacting write performance.
+#
+# kubectl scale deployment boltq-replicas --replicas=10
+# Or use HPA (defined below) for auto-scaling based on CPU.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: boltq-replicas
+  labels:
+    app: boltq
+    role: replica
+spec:
+  ports:
+    - name: http
+      port: 9090
+    - name: tcp
+      port: 9091
+  selector:
+    app: boltq
+    role: replica
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: boltq-replicas
+spec:
+  replicas: 2  # Start with 2, HPA will scale
+  selector:
+    matchLabels:
+      app: boltq
+      role: replica
+  template:
+    metadata:
+      labels:
+        app: boltq
+        role: replica
+    spec:
+      terminationGracePeriodSeconds: 15
+      containers:
+        - name: boltq
+          image: boltq:latest
+          ports:
+            - containerPort: 9090
+              name: http
+            - containerPort: 9091
+              name: tcp
+            - containerPort: 9100
+              name: raft
+          env:
+            - name: BOLTQ_CLUSTER_ENABLED
+              value: "true"
+            - name: BOLTQ_NON_VOTER
+              value: "true"
+            - name: BOLTQ_HTTP_PORT
+              value: "9090"
+            - name: BOLTQ_TCP_PORT
+              value: "9091"
+            - name: BOLTQ_STORAGE_MODE
+              value: disk
+            - name: BOLTQ_DATA_DIR
+              value: /var/lib/boltq/data
+            - name: BOLTQ_RAFT_DIR
+              value: /var/lib/boltq/raft
+            # Node ID auto-generated from hostname (pod name)
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: BOLTQ_RAFT_ADDR
+              value: "$(POD_NAME).boltq-replicas:9100"
+            # Seeds: point to voter nodes
+            - name: BOLTQ_SEEDS
+              value: "boltq-voters-0.boltq-voters:9090,boltq-voters-1.boltq-voters:9090,boltq-voters-2.boltq-voters:9090"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 9090
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 9090
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+---
+# Auto-scale replicas based on CPU usage.
+# Scale 2 → 20 replicas when CPU > 70%.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: boltq-replicas-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: boltq-replicas
+  minReplicas: 2
+  maxReplicas: 20
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70

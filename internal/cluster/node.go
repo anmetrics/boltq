@@ -152,7 +152,19 @@ func (n *RaftNode) Join(nodeID, addr string) error {
 	if err := f.Error(); err != nil {
 		return fmt.Errorf("cluster: add voter %s at %s: %w", nodeID, addr, err)
 	}
-	log.Printf("[cluster] node %s at %s joined the cluster", nodeID, addr)
+	log.Printf("[cluster] voter %s at %s joined the cluster", nodeID, addr)
+	return nil
+}
+
+// JoinNonVoter adds a non-voter (read replica) to the cluster.
+// Non-voters receive replicated log entries but do not participate in elections or quorum.
+// This allows scaling read capacity without impacting consensus performance.
+func (n *RaftNode) JoinNonVoter(nodeID, addr string) error {
+	f := n.raft.AddNonvoter(raft.ServerID(nodeID), raft.ServerAddress(addr), 0, 10*time.Second)
+	if err := f.Error(); err != nil {
+		return fmt.Errorf("cluster: add non-voter %s at %s: %w", nodeID, addr, err)
+	}
+	log.Printf("[cluster] non-voter %s at %s joined the cluster (read replica)", nodeID, addr)
 	return nil
 }
 

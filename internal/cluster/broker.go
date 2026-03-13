@@ -140,6 +140,22 @@ func (cb *ClusterBroker) RequeueTimedOut(messageID string) error {
 	return resp.Error
 }
 
+// PurgeQueue purges a queue (leader-local, not replicated for simplicity).
+func (cb *ClusterBroker) PurgeQueue(topic string) (int64, error) {
+	if !cb.node.IsLeader() {
+		return 0, cb.notLeaderError()
+	}
+	return cb.localBroker.PurgeQueue(topic)
+}
+
+// PurgeDeadLetters purges a dead-letter queue.
+func (cb *ClusterBroker) PurgeDeadLetters(topic string) (int64, error) {
+	if !cb.node.IsLeader() {
+		return 0, cb.notLeaderError()
+	}
+	return cb.localBroker.PurgeDeadLetters(topic)
+}
+
 // Stats returns broker stats augmented with cluster info.
 func (cb *ClusterBroker) Stats() broker.Stats {
 	return cb.localBroker.Stats()

@@ -29,14 +29,15 @@ export default defineNuxtConfig({
     '~/assets/styles/main.scss',
   ],
 
+  runtimeConfig: {
+    boltqUrl: process.env.BOLTQ_ADMIN_URL || 'http://localhost:9090',
+  },
+
   app: {
     head: {
-      title: 'Med. Pharma Analytics Hub',
+      title: 'BoltQ Admin',
       meta: [
-        { name: 'description', content: 'Medical Pharma Analytics Hub - Sample Submissions Management' },
-      ],
-      link: [
-        { rel: 'icon', type: 'image/x-icon', href: '/favicon.ico' },
+        { name: 'description', content: 'BoltQ Message Queue Admin Dashboard' },
       ],
     },
   },

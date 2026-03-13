@@ -25,6 +25,8 @@ type ClusterConfig struct {
 	RaftDir           string   `json:"raft_dir"`
 	Bootstrap         bool     `json:"bootstrap"`
 	Peers             []string `json:"peers"`
+	Seeds             []string `json:"seeds"`               // Seed node HTTP addresses for auto-discovery (e.g., ["10.0.0.1:9090","10.0.0.2:9090"])
+	NonVoter          bool     `json:"non_voter"`            // Join as non-voter (read replica) — scales without affecting consensus
 	SnapshotThreshold uint64   `json:"snapshot_threshold"`
 }
 

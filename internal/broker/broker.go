@@ -312,6 +312,31 @@ func (b *Broker) RequeueTimedOut(messageID string) error {
 	return b.retryOrDeadLetter(pm.Message, pm.QueueName)
 }
 
+// PurgeQueue removes all messages from the specified queue.
+func (b *Broker) PurgeQueue(topic string) (int64, error) {
+	b.mu.RLock()
+	q, ok := b.queues[topic]
+	b.mu.RUnlock()
+	if !ok {
+		return 0, fmt.Errorf("queue %s not found", topic)
+	}
+	count := q.Purge()
+	return count, nil
+}
+
+// PurgeDeadLetters removes all messages from a dead-letter queue.
+func (b *Broker) PurgeDeadLetters(topic string) (int64, error) {
+	dlName := topic + "_dead_letter"
+	b.mu.RLock()
+	q, ok := b.deadLetters[dlName]
+	b.mu.RUnlock()
+	if !ok {
+		return 0, fmt.Errorf("dead letter queue %s not found", dlName)
+	}
+	count := q.Purge()
+	return count, nil
+}
+
 // Stats returns broker statistics.
 type Stats struct {
 	Queues       map[string]int64
