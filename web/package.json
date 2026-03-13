@@ -1,0 +1,25 @@
+{
+  "name": "pharma-analytics-hub",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "nuxt build",
+    "dev": "nuxt dev",
+    "generate": "nuxt generate",
+    "preview": "nuxt preview",
+    "postinstall": "nuxt prepare"
+  },
+  "dependencies": {
+    "nuxt": "^3.16.0",
+    "vue": "^3.5.13",
+    "vue-router": "^4.5.0",
+    "vuetify": "^3.8.0",
+    "@mdi/font": "^7.4.47",
+    "vite-plugin-vuetify": "^2.1.1"
+  },
+  "devDependencies": {
+    "@nuxt/devtools": "^2.3.0",
+    "sass": "^1.86.0",
+    "typescript": "^5.8.0"
+  }
+}

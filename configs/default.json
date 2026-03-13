@@ -1,0 +1,22 @@
+{
+  "server": {
+    "http_port": 9090,
+    "grpc_port": 9091,
+    "host": "0.0.0.0"
+  },
+  "storage": {
+    "mode": "memory",
+    "data_dir": "./data"
+  },
+  "queue": {
+    "max_retry": 5,
+    "ack_timeout": "30s",
+    "capacity": 1048576
+  },
+  "performance": {
+    "worker_pool": 16
+  },
+  "security": {
+    "api_key": ""
+  }
+}
