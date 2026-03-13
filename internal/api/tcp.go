@@ -2,6 +2,7 @@ package api
 
 import (
 	"bufio"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/boltq/boltq/internal/broker"
 	"github.com/boltq/boltq/internal/cluster"
+	"github.com/boltq/boltq/internal/config"
 	"github.com/boltq/boltq/internal/metrics"
 	"github.com/boltq/boltq/pkg/protocol"
 )
@@ -20,6 +22,7 @@ type TCPServer struct {
 	broker      broker.BrokerIface
 	metrics     *metrics.Metrics
 	apiKey      string
+	tlsConfig   config.TLSConfig
 	clusterNode *cluster.RaftNode
 	listener    net.Listener
 	wg          sync.WaitGroup
@@ -27,23 +30,38 @@ type TCPServer struct {
 }
 
 // NewTCPServer creates a new TCP server.
-func NewTCPServer(b broker.BrokerIface, m *metrics.Metrics, apiKey string) *TCPServer {
+func NewTCPServer(b broker.BrokerIface, m *metrics.Metrics, cfg config.ServerConfig, apiKey string) *TCPServer {
 	return &TCPServer{
-		broker:  b,
-		metrics: m,
-		apiKey:  apiKey,
-		quit:    make(chan struct{}),
+		broker:    b,
+		metrics:   m,
+		apiKey:    apiKey,
+		tlsConfig: cfg.TLS,
+		quit:      make(chan struct{}),
 	}
 }
 
 // Start begins listening for TCP connections on the given address.
 func (s *TCPServer) Start(addr string) error {
-	ln, err := net.Listen("tcp", addr)
+	var ln net.Listener
+	var err error
+
+	if s.tlsConfig.Enabled {
+		cert, err2 := tls.LoadX509KeyPair(s.tlsConfig.CertFile, s.tlsConfig.KeyFile)
+		if err2 != nil {
+			return fmt.Errorf("load tls keys: %w", err2)
+		}
+		tlsCfg := &tls.Config{Certificates: []tls.Certificate{cert}}
+		ln, err = tls.Listen("tcp", addr, tlsCfg)
+		log.Printf("[tcp] listening on %s (TLS)", addr)
+	} else {
+		ln, err = net.Listen("tcp", addr)
+		log.Printf("[tcp] listening on %s", addr)
+	}
+
 	if err != nil {
 		return fmt.Errorf("tcp listen: %w", err)
 	}
 	s.listener = ln
-	log.Printf("[tcp] listening on %s", addr)
 
 	go s.acceptLoop()
 	return nil

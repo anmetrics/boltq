@@ -17,6 +17,7 @@ High-performance message queue server written in Go. Built for low latency, high
 - **WAL Persistence** — Write-Ahead Log for crash recovery
 - **Prometheus Metrics** — `/metrics` endpoint
 - **API Key Auth** — optional authentication
+- **TLS Encryption** — full end-to-end encryption for TCP and HTTP
 - **Lock-free ring buffer** — 1M+ message capacity
 
 ## Performance
@@ -118,6 +119,7 @@ stats, err := client.Stats()
 ```go
 client := boltq.New("localhost:9091", boltq.WithAPIKey("secret"))
 client := boltq.New("localhost:9091", boltq.WithTimeout(5 * time.Second))
+client := boltq.New("localhost:9091", boltq.WithTLS(&tls.Config{InsecureSkipVerify: true}))
 ```
 
 ### Cluster-Aware Client
@@ -148,6 +150,11 @@ boltq ack -id <message_id>
 boltq nack -id <message_id>
 boltq stats
 boltq health
+
+# With TLS
+export BOLTQ_TLS_ENABLED=true
+export BOLTQ_CA_FILE=./certs/ca.crt
+boltq stats
 ```
 
 ## HTTP Admin API
@@ -231,6 +238,13 @@ Set `BOLTQ_ADMIN_URL` to point to the BoltQ HTTP server (default: `http://localh
   "security": {
     "api_key": ""
   },
+  "server": {
+    "tls": {
+      "enabled": false,
+      "cert_file": "",
+      "key_file": ""
+    }
+  },
   "cluster": {
     "enabled": false,
     "node_id": "node1",
@@ -262,6 +276,9 @@ Set `BOLTQ_ADMIN_URL` to point to the BoltQ HTTP server (default: `http://localh
 | `BOLTQ_NON_VOTER` | Join as non-voter read replica |
 | `BOLTQ_JOIN_ADDR` | Comma-separated leader/seed addresses (alternative to seeds) |
 | `BOLTQ_CLUSTER_PEERS` | Comma-separated peer addresses |
+| `BOLTQ_TLS_ENABLED` | Enable TLS (true/false) |
+| `BOLTQ_CA_FILE` | Path to CA certificate (for CLI/SDK) |
+| `BOLTQ_TLS_INSECURE` | Skip TLS verification (for CLI/SDK) |
 
 ## Storage Modes
 

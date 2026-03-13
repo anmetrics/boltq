@@ -17,7 +17,12 @@ Pass the config file path with the `-config` flag:
   "server": {
     "http_port": 9090,
     "grpc_port": 9091,
-    "host": "0.0.0.0"
+    "host": "0.0.0.0",
+    "tls": {
+      "enabled": false,
+      "cert_file": "/etc/boltq/certs/server.crt",
+      "key_file": "/etc/boltq/certs/server.key"
+    }
   },
   "storage": {
     "mode": "memory",
@@ -46,6 +51,9 @@ Pass the config file path with the `-config` flag:
 | `http_port` | int | `9090` | HTTP API listening port |
 | `grpc_port` | int | `9091` | gRPC listening port (reserved) |
 | `host` | string | `0.0.0.0` | Bind address |
+| `tls.enabled` | bool | `false` | Enable TLS encryption |
+| `tls.cert_file` | string | `""` | Path to TLS certificate file |
+| `tls.key_file` | string | `""` | Path to TLS private key file |
 
 ### storage
 

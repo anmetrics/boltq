@@ -31,10 +31,19 @@ type ClusterConfig struct {
 }
 
 type ServerConfig struct {
-	HTTPPort int    `json:"http_port"`
-	TCPPort  int    `json:"tcp_port"`
-	GRPCPort int    `json:"grpc_port"`
-	Host     string `json:"host"`
+	HTTPPort int       `json:"http_port"`
+	TCPPort  int       `json:"tcp_port"`
+	GRPCPort int       `json:"grpc_port"`
+	Host     string    `json:"host"`
+	TLS      TLSConfig `json:"tls"`
+}
+
+// TLSConfig defines TLS settings.
+type TLSConfig struct {
+	Enabled  bool   `json:"enabled"`
+	CertFile string `json:"cert_file"`
+	KeyFile  string `json:"key_file"`
+	CAFile   string `json:"ca_file"` // Optional: for verifying client certificates or intra-cluster auth
 }
 
 type StorageConfig struct {
@@ -64,6 +73,9 @@ func Default() *Config {
 			TCPPort:  9091,
 			GRPCPort: 9092,
 			Host:     "0.0.0.0",
+			TLS: TLSConfig{
+				Enabled: false,
+			},
 		},
 		Storage: StorageConfig{
 			Mode:    "memory",

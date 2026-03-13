@@ -2,6 +2,7 @@ package boltq
 
 import (
 	"bufio"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -13,9 +14,10 @@ import (
 
 // Client is the BoltQ Go SDK client using TCP protocol.
 type Client struct {
-	addr    string
-	apiKey  string
-	timeout time.Duration
+	addr      string
+	apiKey    string
+	timeout   time.Duration
+	tlsConfig *tls.Config
 
 	conn   net.Conn
 	reader *bufio.Reader
@@ -63,6 +65,11 @@ func WithTimeout(d time.Duration) Option {
 	return func(c *Client) { c.timeout = d }
 }
 
+// WithTLS enables TLS and sets the TLS configuration.
+func WithTLS(config *tls.Config) Option {
+	return func(c *Client) { c.tlsConfig = config }
+}
+
 // New creates a new BoltQ TCP client. addr should be "host:port".
 func New(addr string, opts ...Option) *Client {
 	c := &Client{
@@ -77,7 +84,15 @@ func New(addr string, opts ...Option) *Client {
 
 // Connect establishes the TCP connection and authenticates if apiKey is set.
 func (c *Client) Connect() error {
-	conn, err := net.DialTimeout("tcp", c.addr, c.timeout)
+	var conn net.Conn
+	var err error
+
+	if c.tlsConfig != nil {
+		conn, err = tls.DialWithDialer(&net.Dialer{Timeout: c.timeout}, "tcp", c.addr, c.tlsConfig)
+	} else {
+		conn, err = net.DialTimeout("tcp", c.addr, c.timeout)
+	}
+
 	if err != nil {
 		return fmt.Errorf("connect: %w", err)
 	}

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/boltq/boltq/internal/broker"
+	"github.com/boltq/boltq/internal/config"
 	"github.com/boltq/boltq/internal/metrics"
 )
 
@@ -16,7 +17,8 @@ func newTestServer() *HTTPServer {
 		AckTimeout: 30 * time.Second,
 		QueueCap:   1024,
 	})
-	return NewHTTPServer(b, metrics.Global(), "")
+	cfg := config.Default().Server
+	return NewHTTPServer(b, metrics.Global(), cfg, "")
 }
 
 func TestHealthEndpoint(t *testing.T) {
@@ -51,7 +53,8 @@ func TestOverviewEndpoint(t *testing.T) {
 
 func TestAPIKeyAuth(t *testing.T) {
 	b := broker.New(broker.Config{MaxRetry: 3, AckTimeout: 30 * time.Second, QueueCap: 1024})
-	s := NewHTTPServer(b, metrics.Global(), "secret-key")
+	cfg := config.Default().Server
+	s := NewHTTPServer(b, metrics.Global(), cfg, "secret-key")
 
 	req := httptest.NewRequest("GET", "/stats", nil)
 	w := httptest.NewRecorder()

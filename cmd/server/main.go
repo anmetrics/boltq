@@ -148,7 +148,7 @@ func main() {
 	m := metrics.Global()
 
 	// Start TCP server.
-	tcpServer := api.NewTCPServer(activeBroker, m, cfg.Security.APIKey)
+	tcpServer := api.NewTCPServer(activeBroker, m, cfg.Server, cfg.Security.APIKey)
 	if raftNode != nil {
 		tcpServer.SetClusterNode(raftNode)
 	}
@@ -158,7 +158,7 @@ func main() {
 	}
 
 	// Start HTTP server.
-	httpServer := api.NewHTTPServer(activeBroker, m, cfg.Security.APIKey)
+	httpServer := api.NewHTTPServer(activeBroker, m, cfg.Server, cfg.Security.APIKey)
 	if raftNode != nil {
 		httpServer.SetClusterNode(raftNode)
 	}

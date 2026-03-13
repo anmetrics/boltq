@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -26,6 +28,29 @@ func main() {
 	if apiKey != "" {
 		opts = append(opts, boltq.WithAPIKey(apiKey))
 	}
+
+	if os.Getenv("BOLTQ_TLS_ENABLED") == "true" {
+		tlsCfg := &tls.Config{}
+		caFile := os.Getenv("BOLTQ_CA_FILE")
+		if caFile != "" {
+			caCert, err := os.ReadFile(caFile)
+			if err != nil {
+				log.Fatalf("failed to read CA file: %v", err)
+			}
+			caPool := x509.NewCertPool()
+			caPool.AppendCertsFromPEM(caCert)
+			tlsCfg.RootCAs = caPool
+		} else {
+			// If no CA provided, but TLS enabled, we might want to skip verification for self-signed
+			// or use system certs. For now, let's assume system certs if no CA provided.
+			// Or we can add a BOLTQ_TLS_INSECURE flag.
+			if os.Getenv("BOLTQ_TLS_INSECURE") == "true" {
+				tlsCfg.InsecureSkipVerify = true
+			}
+		}
+		opts = append(opts, boltq.WithTLS(tlsCfg))
+	}
+
 	client := boltq.New(serverAddr, opts...)
 	if err := client.Connect(); err != nil {
 		log.Fatalf("failed to connect to %s: %v", serverAddr, err)
@@ -69,8 +94,11 @@ Commands:
   health    Check server health
 
 Environment:
-  BOLTQ_ADDR     TCP server address (default: localhost:9091)
-  BOLTQ_API_KEY  API key for authentication`)
+  BOLTQ_ADDR          TCP server address (default: localhost:9091)
+  BOLTQ_API_KEY       API key for authentication
+  BOLTQ_TLS_ENABLED   Enable TLS (true/false)
+  BOLTQ_CA_FILE       Path to CA certificate file
+  BOLTQ_TLS_INSECURE  Skip TLS verification (true/false)`)
 }
 
 func cmdPublish(client *boltq.Client, args []string) {

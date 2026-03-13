@@ -14,8 +14,11 @@ go build -o bin/boltq ./cmd/cli
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `BOLTQ_URL` | `http://localhost:9090` | Server URL |
-| `BOLTQ_API_KEY` | (none) | API key for authentication |
+| `BOLTQ_ADDR` | `localhost:9091` | Server address |
+| `BOLTQ_API_KEY` | `""` | API key for authentication |
+| `BOLTQ_TLS_ENABLED` | `false` | Enable TLS (true/false) |
+| `BOLTQ_CA_FILE` | `""` | Path to CA certificate file |
+| `BOLTQ_TLS_INSECURE` | `false` | Skip TLS verification (true/false) |
 
 ## Commands
 

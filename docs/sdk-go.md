@@ -26,6 +26,16 @@ client := boltq.New("http://localhost:9090", boltq.WithAPIKey("my-secret"))
 // With custom timeout
 client := boltq.New("http://localhost:9090", boltq.WithTimeout(30 * time.Second))
 
+### Options
+
+- `WithAPIKey(string)`: Sets the API key.
+- `WithTimeout(time.Duration)`: Sets connection timeout.
+- `WithTLS(*tls.Config)`: Enables TLS encryption.
+
+```go
+client := boltq.New("addr:9091", boltq.WithTLS(&tls.Config{...}))
+```
+
 // Combined
 client := boltq.New("http://localhost:9090",
     boltq.WithAPIKey("my-secret"),

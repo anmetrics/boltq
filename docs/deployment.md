@@ -303,6 +303,29 @@ You can also scale the replicas manually if needed:
 kubectl scale deployment boltq-replicas --replicas=10
 ```
 
+### TLS in Kubernetes
+
+To enable TLS in Kubernetes, create a secret containing your certificates:
+
+```bash
+kubectl create secret tls boltq-tls \
+  --cert=certs/server.crt \
+  --key=certs/server.key
+```
+
+Then, mount the secret in your manifests and enable TLS in the config.
+
+```yaml
+# In Pod spec
+volumeMounts:
+- name: certs
+  mountPath: /etc/boltq/certs
+volumes:
+- name: certs
+  secret:
+    secretName: boltq-tls
+```
+
 ## Production Checklist
 
 ### Before Deploy

@@ -10,6 +10,7 @@ import (
 
 	"github.com/boltq/boltq/internal/broker"
 	"github.com/boltq/boltq/internal/cluster"
+	"github.com/boltq/boltq/internal/config"
 	"github.com/boltq/boltq/internal/metrics"
 )
 
@@ -19,18 +20,20 @@ type HTTPServer struct {
 	broker      broker.BrokerIface
 	metrics     *metrics.Metrics
 	apiKey      string
+	tlsConfig   config.TLSConfig
 	clusterNode *cluster.RaftNode // nil if clustering is disabled
 	mux         *http.ServeMux
 	server      *http.Server
 }
 
 // NewHTTPServer creates a new HTTP admin server.
-func NewHTTPServer(b broker.BrokerIface, m *metrics.Metrics, apiKey string) *HTTPServer {
+func NewHTTPServer(b broker.BrokerIface, m *metrics.Metrics, cfg config.ServerConfig, apiKey string) *HTTPServer {
 	s := &HTTPServer{
-		broker:  b,
-		metrics: m,
-		apiKey:  apiKey,
-		mux:     http.NewServeMux(),
+		broker:    b,
+		metrics:   m,
+		apiKey:    apiKey,
+		tlsConfig: cfg.TLS,
+		mux:       http.NewServeMux(),
 	}
 	s.registerRoutes()
 	return s
@@ -62,6 +65,12 @@ func (s *HTTPServer) Start(addr string) error {
 		WriteTimeout: 30 * time.Second,
 		IdleTimeout:  60 * time.Second,
 	}
+
+	if s.tlsConfig.Enabled {
+		log.Printf("[http] admin listening on %s (TLS)", addr)
+		return s.server.ListenAndServeTLS(s.tlsConfig.CertFile, s.tlsConfig.KeyFile)
+	}
+
 	log.Printf("[http] admin listening on %s", addr)
 	return s.server.ListenAndServe()
 }
