@@ -14,6 +14,18 @@ type Config struct {
 	Queue       QueueConfig       `json:"queue"`
 	Performance PerformanceConfig `json:"performance"`
 	Security    SecurityConfig    `json:"security"`
+	Cluster     ClusterConfig     `json:"cluster"`
+}
+
+// ClusterConfig holds Raft clustering configuration.
+type ClusterConfig struct {
+	Enabled           bool     `json:"enabled"`
+	NodeID            string   `json:"node_id"`
+	RaftAddr          string   `json:"raft_addr"`
+	RaftDir           string   `json:"raft_dir"`
+	Bootstrap         bool     `json:"bootstrap"`
+	Peers             []string `json:"peers"`
+	SnapshotThreshold uint64   `json:"snapshot_threshold"`
 }
 
 type ServerConfig struct {
@@ -62,6 +74,12 @@ func Default() *Config {
 		},
 		Performance: PerformanceConfig{
 			WorkerPool: 16,
+		},
+		Cluster: ClusterConfig{
+			Enabled:           false,
+			RaftAddr:          "0.0.0.0:9100",
+			RaftDir:           "./data/raft",
+			SnapshotThreshold: 8192,
 		},
 	}
 }

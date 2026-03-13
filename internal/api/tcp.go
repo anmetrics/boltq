@@ -10,22 +10,24 @@ import (
 	"sync"
 
 	"github.com/boltq/boltq/internal/broker"
+	"github.com/boltq/boltq/internal/cluster"
 	"github.com/boltq/boltq/internal/metrics"
 	"github.com/boltq/boltq/pkg/protocol"
 )
 
 // TCPServer provides the binary TCP protocol for the message broker.
 type TCPServer struct {
-	broker   *broker.Broker
-	metrics  *metrics.Metrics
-	apiKey   string
-	listener net.Listener
-	wg       sync.WaitGroup
-	quit     chan struct{}
+	broker      broker.BrokerIface
+	metrics     *metrics.Metrics
+	apiKey      string
+	clusterNode *cluster.RaftNode
+	listener    net.Listener
+	wg          sync.WaitGroup
+	quit        chan struct{}
 }
 
 // NewTCPServer creates a new TCP server.
-func NewTCPServer(b *broker.Broker, m *metrics.Metrics, apiKey string) *TCPServer {
+func NewTCPServer(b broker.BrokerIface, m *metrics.Metrics, apiKey string) *TCPServer {
 	return &TCPServer{
 		broker:  b,
 		metrics: m,
@@ -133,6 +135,12 @@ func (s *TCPServer) dispatch(frame protocol.Frame, authenticated *bool) protocol
 		return s.handleNackTCP(frame)
 	case protocol.CmdStats:
 		return s.handleStatsTCP()
+	case protocol.CmdClusterJoin:
+		return s.handleClusterJoinTCP(frame)
+	case protocol.CmdClusterLeave:
+		return s.handleClusterLeaveTCP(frame)
+	case protocol.CmdClusterStatus:
+		return s.handleClusterStatusTCP()
 	default:
 		return s.errorFrame(fmt.Sprintf("unknown command: 0x%02x", frame.Command))
 	}
@@ -182,6 +190,9 @@ func (s *TCPServer) handlePublishTCP(frame protocol.Frame) protocol.Frame {
 
 	msg := newMessage(req.Topic, req.Payload, req.Headers)
 	if err := s.broker.Publish(req.Topic, msg); err != nil {
+		if nle, ok := cluster.IsNotLeaderError(err); ok {
+			return s.notLeaderFrame(nle)
+		}
 		return s.errorFrame(err.Error())
 	}
 
@@ -203,6 +214,9 @@ func (s *TCPServer) handlePublishTopicTCP(frame protocol.Frame) protocol.Frame {
 
 	msg := newMessage(req.Topic, req.Payload, req.Headers)
 	if err := s.broker.PublishTopic(req.Topic, msg); err != nil {
+		if nle, ok := cluster.IsNotLeaderError(err); ok {
+			return s.notLeaderFrame(nle)
+		}
 		return s.errorFrame(err.Error())
 	}
 
@@ -259,6 +273,9 @@ func (s *TCPServer) handleAckTCP(frame protocol.Frame) protocol.Frame {
 	}
 
 	if err := s.broker.Ack(req.ID); err != nil {
+		if nle, ok := cluster.IsNotLeaderError(err); ok {
+			return s.notLeaderFrame(nle)
+		}
 		return s.errorFrame(err.Error())
 	}
 
@@ -278,6 +295,9 @@ func (s *TCPServer) handleNackTCP(frame protocol.Frame) protocol.Frame {
 	}
 
 	if err := s.broker.Nack(req.ID); err != nil {
+		if nle, ok := cluster.IsNotLeaderError(err); ok {
+			return s.notLeaderFrame(nle)
+		}
 		return s.errorFrame(err.Error())
 	}
 
@@ -292,6 +312,68 @@ func (s *TCPServer) handleStatsTCP() protocol.Frame {
 	return s.okFrame(data)
 }
 
+// --- CLUSTER JOIN ---
+
+func (s *TCPServer) handleClusterJoinTCP(frame protocol.Frame) protocol.Frame {
+	if s.clusterNode == nil {
+		return s.errorFrame("clustering is not enabled")
+	}
+	var req struct {
+		NodeID string `json:"node_id"`
+		Addr   string `json:"addr"`
+	}
+	if err := json.Unmarshal(frame.Payload, &req); err != nil {
+		return s.errorFrame("invalid json")
+	}
+	if req.NodeID == "" || req.Addr == "" {
+		return s.errorFrame("node_id and addr are required")
+	}
+	if err := s.clusterNode.Join(req.NodeID, req.Addr); err != nil {
+		return s.errorFrame(err.Error())
+	}
+	data, _ := json.Marshal(map[string]string{"status": "joined", "node_id": req.NodeID})
+	return s.okFrame(data)
+}
+
+// --- CLUSTER LEAVE ---
+
+func (s *TCPServer) handleClusterLeaveTCP(frame protocol.Frame) protocol.Frame {
+	if s.clusterNode == nil {
+		return s.errorFrame("clustering is not enabled")
+	}
+	var req struct {
+		NodeID string `json:"node_id"`
+	}
+	if err := json.Unmarshal(frame.Payload, &req); err != nil {
+		return s.errorFrame("invalid json")
+	}
+	if req.NodeID == "" {
+		return s.errorFrame("node_id is required")
+	}
+	if err := s.clusterNode.Leave(req.NodeID); err != nil {
+		return s.errorFrame(err.Error())
+	}
+	data, _ := json.Marshal(map[string]string{"status": "removed", "node_id": req.NodeID})
+	return s.okFrame(data)
+}
+
+// --- CLUSTER STATUS ---
+
+func (s *TCPServer) handleClusterStatusTCP() protocol.Frame {
+	if s.clusterNode == nil {
+		data, _ := json.Marshal(map[string]interface{}{"enabled": false})
+		return s.okFrame(data)
+	}
+	status := s.clusterNode.Status()
+	data, _ := json.Marshal(map[string]interface{}{"enabled": true, "cluster": status})
+	return s.okFrame(data)
+}
+
+// SetClusterNode sets the Raft node for cluster management operations.
+func (s *TCPServer) SetClusterNode(node *cluster.RaftNode) {
+	s.clusterNode = node
+}
+
 // --- Helpers ---
 
 func (s *TCPServer) okFrame(payload []byte) protocol.Frame {
@@ -301,6 +383,15 @@ func (s *TCPServer) okFrame(payload []byte) protocol.Frame {
 func (s *TCPServer) errorFrame(msg string) protocol.Frame {
 	data, _ := json.Marshal(map[string]string{"error": msg})
 	return protocol.Frame{Command: protocol.StatusError, Payload: data}
+}
+
+func (s *TCPServer) notLeaderFrame(nle *cluster.NotLeaderError) protocol.Frame {
+	data, _ := json.Marshal(map[string]string{
+		"error":     "not leader",
+		"leader":    nle.Leader,
+		"leader_id": nle.LeaderID,
+	})
+	return protocol.Frame{Command: protocol.StatusNotLeader, Payload: data}
 }
 
 func (s *TCPServer) writeError(w *bufio.Writer, msg string) {

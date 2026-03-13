@@ -25,12 +25,29 @@ type Client struct {
 
 // Message represents a consumed message.
 type Message struct {
-	ID        string            `json:"id"`
-	Topic     string            `json:"topic"`
-	Payload   json.RawMessage   `json:"payload"`
-	Headers   map[string]string `json:"headers,omitempty"`
-	Timestamp int64             `json:"timestamp"`
-	Retry     int               `json:"retry"`
+	ID            string            `json:"id"`
+	Topic         string            `json:"topic"`
+	Payload       json.RawMessage   `json:"payload"`
+	Headers       map[string]string `json:"headers,omitempty"`
+	Timestamp     int64             `json:"timestamp"`
+	Retry         int               `json:"retry"`
+	DeliveryCount int               `json:"delivery_count"`
+}
+
+// NotLeaderError is returned when the connected node is not the cluster leader.
+type NotLeaderError struct {
+	Leader   string `json:"leader"`
+	LeaderID string `json:"leader_id"`
+}
+
+func (e *NotLeaderError) Error() string {
+	return fmt.Sprintf("not leader, current leader is %s (%s)", e.LeaderID, e.Leader)
+}
+
+// ClusterStatus represents the cluster status response.
+type ClusterStatus struct {
+	Enabled bool                   `json:"enabled"`
+	Cluster map[string]interface{} `json:"cluster,omitempty"`
 }
 
 // Option configures the client.
@@ -156,6 +173,9 @@ func (c *Client) Consume(topic string) (*Message, error) {
 	if frame.Command == protocol.StatusEmpty {
 		return nil, nil
 	}
+	if frame.Command == protocol.StatusNotLeader {
+		return nil, parseNotLeaderError(frame.Payload)
+	}
 	if frame.Command == protocol.StatusError {
 		return nil, fmt.Errorf("consume: %s", string(frame.Payload))
 	}
@@ -201,6 +221,19 @@ func (c *Client) Stats() (map[string]interface{}, error) {
 	return result, nil
 }
 
+// ClusterStatusInfo returns the cluster status information.
+func (c *Client) ClusterStatusInfo() (*ClusterStatus, error) {
+	resp, err := c.command(protocol.CmdClusterStatus, []byte("{}"))
+	if err != nil {
+		return nil, err
+	}
+	var status ClusterStatus
+	if err := json.Unmarshal(resp, &status); err != nil {
+		return nil, err
+	}
+	return &status, nil
+}
+
 // Health checks if the server is healthy.
 func (c *Client) Health() error {
 	return c.Ping()
@@ -211,6 +244,9 @@ func (c *Client) command(cmd byte, payload []byte) ([]byte, error) {
 	frame, err := c.sendCommand(cmd, payload)
 	if err != nil {
 		return nil, err
+	}
+	if frame.Command == protocol.StatusNotLeader {
+		return nil, parseNotLeaderError(frame.Payload)
 	}
 	if frame.Command == protocol.StatusError {
 		var errResp struct {
@@ -246,4 +282,10 @@ func (c *Client) sendCommand(cmd byte, payload []byte) (protocol.Frame, error) {
 	}
 
 	return resp, nil
+}
+
+func parseNotLeaderError(payload []byte) *NotLeaderError {
+	var nle NotLeaderError
+	json.Unmarshal(payload, &nle)
+	return &nle
 }

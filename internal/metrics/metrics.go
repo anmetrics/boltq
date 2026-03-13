@@ -13,6 +13,9 @@ type Metrics struct {
 	MessagesNacked    int64 `json:"messages_nacked"`
 	RetryCount        int64 `json:"retry_count"`
 	DeadLetterCount   int64 `json:"dead_letter_count"`
+	RaftApplyCount    int64 `json:"raft_apply_count"`
+	SnapshotCount     int64 `json:"snapshot_count"`
+	LeaderChanges     int64 `json:"leader_changes"`
 }
 
 var global = &Metrics{}
@@ -28,6 +31,9 @@ func (m *Metrics) IncAcked()       { atomic.AddInt64(&m.MessagesAcked, 1) }
 func (m *Metrics) IncNacked()      { atomic.AddInt64(&m.MessagesNacked, 1) }
 func (m *Metrics) IncRetry()       { atomic.AddInt64(&m.RetryCount, 1) }
 func (m *Metrics) IncDeadLetter()  { atomic.AddInt64(&m.DeadLetterCount, 1) }
+func (m *Metrics) IncRaftApply()   { atomic.AddInt64(&m.RaftApplyCount, 1) }
+func (m *Metrics) IncSnapshot()    { atomic.AddInt64(&m.SnapshotCount, 1) }
+func (m *Metrics) IncLeaderChange() { atomic.AddInt64(&m.LeaderChanges, 1) }
 
 // Snapshot returns a copy of the current metrics.
 func (m *Metrics) Snapshot() Metrics {
@@ -38,6 +44,9 @@ func (m *Metrics) Snapshot() Metrics {
 		MessagesNacked:    atomic.LoadInt64(&m.MessagesNacked),
 		RetryCount:        atomic.LoadInt64(&m.RetryCount),
 		DeadLetterCount:   atomic.LoadInt64(&m.DeadLetterCount),
+		RaftApplyCount:    atomic.LoadInt64(&m.RaftApplyCount),
+		SnapshotCount:     atomic.LoadInt64(&m.SnapshotCount),
+		LeaderChanges:     atomic.LoadInt64(&m.LeaderChanges),
 	}
 }
 
@@ -67,7 +76,16 @@ func (m *Metrics) Prometheus() string {
 		promLine("boltq_retry_count", snap.RetryCount) +
 		"# HELP boltq_dead_letter_count Total dead letter count\n" +
 		"# TYPE boltq_dead_letter_count counter\n" +
-		promLine("boltq_dead_letter_count", snap.DeadLetterCount)
+		promLine("boltq_dead_letter_count", snap.DeadLetterCount) +
+		"# HELP boltq_raft_apply_count Total Raft apply operations\n" +
+		"# TYPE boltq_raft_apply_count counter\n" +
+		promLine("boltq_raft_apply_count", snap.RaftApplyCount) +
+		"# HELP boltq_snapshot_count Total snapshots taken\n" +
+		"# TYPE boltq_snapshot_count counter\n" +
+		promLine("boltq_snapshot_count", snap.SnapshotCount) +
+		"# HELP boltq_leader_changes Total leader changes\n" +
+		"# TYPE boltq_leader_changes counter\n" +
+		promLine("boltq_leader_changes", snap.LeaderChanges)
 }
 
 func promLine(name string, val int64) string {

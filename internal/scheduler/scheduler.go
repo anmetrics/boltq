@@ -10,14 +10,14 @@ import (
 
 // Scheduler runs background tasks: ACK timeout watcher and dead-letter handler.
 type Scheduler struct {
-	broker   *broker.Broker
+	broker   broker.BrokerIface
 	interval time.Duration
 	stopCh   chan struct{}
 	wg       sync.WaitGroup
 }
 
 // New creates a new scheduler.
-func New(b *broker.Broker, checkInterval time.Duration) *Scheduler {
+func New(b broker.BrokerIface, checkInterval time.Duration) *Scheduler {
 	if checkInterval <= 0 {
 		checkInterval = time.Second
 	}

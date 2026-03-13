@@ -14,8 +14,9 @@ type Message struct {
 	Payload   []byte            `json:"payload"`
 	Headers   map[string]string `json:"headers,omitempty"`
 	Timestamp int64             `json:"timestamp"`
-	Retry     int               `json:"retry"`
-	MaxRetry  int               `json:"max_retry"`
+	Retry         int               `json:"retry"`
+	MaxRetry      int               `json:"max_retry"`
+	DeliveryCount int               `json:"delivery_count"`
 }
 
 // NewMessage creates a new message with a generated ID and current timestamp.

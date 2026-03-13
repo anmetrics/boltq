@@ -10,21 +10,23 @@ import (
 	"time"
 
 	"github.com/boltq/boltq/internal/broker"
+	"github.com/boltq/boltq/internal/cluster"
 	"github.com/boltq/boltq/internal/metrics"
 	"github.com/boltq/boltq/pkg/protocol"
 )
 
 // HTTPServer provides the REST API for the message broker.
 type HTTPServer struct {
-	broker  *broker.Broker
-	metrics *metrics.Metrics
-	apiKey  string
-	mux     *http.ServeMux
-	server  *http.Server
+	broker      broker.BrokerIface
+	metrics     *metrics.Metrics
+	apiKey      string
+	clusterNode *cluster.RaftNode // nil if clustering is disabled
+	mux         *http.ServeMux
+	server      *http.Server
 }
 
 // NewHTTPServer creates a new HTTP API server.
-func NewHTTPServer(b *broker.Broker, m *metrics.Metrics, apiKey string) *HTTPServer {
+func NewHTTPServer(b broker.BrokerIface, m *metrics.Metrics, apiKey string) *HTTPServer {
 	s := &HTTPServer{
 		broker:  b,
 		metrics: m,
@@ -45,6 +47,11 @@ func (s *HTTPServer) registerRoutes() {
 	s.mux.HandleFunc("/stats", s.auth(s.handleStats))
 	s.mux.HandleFunc("/metrics", s.handleMetrics)
 	s.mux.HandleFunc("/health", s.handleHealth)
+
+	// Cluster management routes (always registered, return 404/error if clustering disabled).
+	s.mux.HandleFunc("/cluster/join", s.auth(s.handleClusterJoin))
+	s.mux.HandleFunc("/cluster/leave", s.auth(s.handleClusterLeave))
+	s.mux.HandleFunc("/cluster/status", s.auth(s.handleClusterStatus))
 }
 
 // Start starts the HTTP server on the given address.
@@ -124,6 +131,10 @@ func (s *HTTPServer) handlePublish(w http.ResponseWriter, r *http.Request) {
 
 	msg := newMessage(req.Topic, req.Payload, req.Headers)
 	if err := s.broker.Publish(req.Topic, msg); err != nil {
+		if nle, ok := cluster.IsNotLeaderError(err); ok {
+			writeNotLeader(w, nle)
+			return
+		}
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -160,6 +171,10 @@ func (s *HTTPServer) handlePublishTopic(w http.ResponseWriter, r *http.Request) 
 
 	msg := newMessage(req.Topic, req.Payload, req.Headers)
 	if err := s.broker.PublishTopic(req.Topic, msg); err != nil {
+		if nle, ok := cluster.IsNotLeaderError(err); ok {
+			writeNotLeader(w, nle)
+			return
+		}
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -284,6 +299,10 @@ func (s *HTTPServer) handleAck(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.broker.Ack(req.ID); err != nil {
+		if nle, ok := cluster.IsNotLeaderError(err); ok {
+			writeNotLeader(w, nle)
+			return
+		}
 		if strings.Contains(err.Error(), "not found") {
 			writeError(w, http.StatusNotFound, err.Error())
 		} else {
@@ -317,6 +336,10 @@ func (s *HTTPServer) handleNack(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.broker.Nack(req.ID); err != nil {
+		if nle, ok := cluster.IsNotLeaderError(err); ok {
+			writeNotLeader(w, nle)
+			return
+		}
 		if strings.Contains(err.Error(), "not found") {
 			writeError(w, http.StatusNotFound, err.Error())
 		} else {
@@ -360,6 +383,96 @@ func (s *HTTPServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
+// --- Cluster Join ---
+
+type clusterJoinRequest struct {
+	NodeID string `json:"node_id"`
+	Addr   string `json:"addr"`
+}
+
+func (s *HTTPServer) handleClusterJoin(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if s.clusterNode == nil {
+		writeError(w, http.StatusBadRequest, "clustering is not enabled")
+		return
+	}
+	var req clusterJoinRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	defer r.Body.Close()
+	if req.NodeID == "" || req.Addr == "" {
+		writeError(w, http.StatusBadRequest, "node_id and addr are required")
+		return
+	}
+	if err := s.clusterNode.Join(req.NodeID, req.Addr); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "joined", "node_id": req.NodeID})
+}
+
+// --- Cluster Leave ---
+
+type clusterLeaveRequest struct {
+	NodeID string `json:"node_id"`
+}
+
+func (s *HTTPServer) handleClusterLeave(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if s.clusterNode == nil {
+		writeError(w, http.StatusBadRequest, "clustering is not enabled")
+		return
+	}
+	var req clusterLeaveRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	defer r.Body.Close()
+	if req.NodeID == "" {
+		writeError(w, http.StatusBadRequest, "node_id is required")
+		return
+	}
+	if err := s.clusterNode.Leave(req.NodeID); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "removed", "node_id": req.NodeID})
+}
+
+// --- Cluster Status ---
+
+func (s *HTTPServer) handleClusterStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if s.clusterNode == nil {
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"enabled": false,
+		})
+		return
+	}
+	status := s.clusterNode.Status()
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"enabled": true,
+		"cluster": status,
+	})
+}
+
+// SetClusterNode sets the Raft node for cluster management endpoints.
+func (s *HTTPServer) SetClusterNode(node *cluster.RaftNode) {
+	s.clusterNode = node
+}
+
 // --- Helpers ---
 
 func writeJSON(w http.ResponseWriter, code int, v interface{}) {
@@ -372,6 +485,14 @@ func writeJSON(w http.ResponseWriter, code int, v interface{}) {
 
 func writeError(w http.ResponseWriter, code int, msg string) {
 	writeJSON(w, code, map[string]string{"error": msg})
+}
+
+func writeNotLeader(w http.ResponseWriter, nle *cluster.NotLeaderError) {
+	writeJSON(w, http.StatusTemporaryRedirect, map[string]string{
+		"error":     "not leader",
+		"leader":    nle.Leader,
+		"leader_id": nle.LeaderID,
+	})
 }
 
 func newMessage(topic string, payload json.RawMessage, headers map[string]string) *protocol.Message {

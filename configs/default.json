@@ -19,5 +19,14 @@
   },
   "security": {
     "api_key": ""
+  },
+  "cluster": {
+    "enabled": false,
+    "node_id": "node1",
+    "raft_addr": "0.0.0.0:9100",
+    "raft_dir": "./data/raft",
+    "bootstrap": false,
+    "peers": [],
+    "snapshot_threshold": 8192
   }
 }

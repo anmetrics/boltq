@@ -348,6 +348,37 @@ func (b *Broker) Stats() Stats {
 	return s
 }
 
+// SnapshotQueues returns a snapshot of all queue contents (for Raft snapshots).
+func (b *Broker) SnapshotQueues() map[string][]*protocol.Message {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	result := make(map[string][]*protocol.Message)
+	for name, q := range b.queues {
+		msgs := q.Drain()
+		if len(msgs) > 0 {
+			result[name] = msgs
+		}
+	}
+	return result
+}
+
+// RestoreQueues rebuilds all queues from snapshot data.
+func (b *Broker) RestoreQueues(data map[string][]*protocol.Message) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for _, q := range b.queues {
+		q.Close()
+	}
+	b.queues = make(map[string]*queue.Queue)
+	for name, msgs := range data {
+		q := queue.New(name, b.queueCap)
+		for _, msg := range msgs {
+			q.Push(msg)
+		}
+		b.queues[name] = q
+	}
+}
+
 // Close closes all queues.
 func (b *Broker) Close() {
 	b.mu.Lock()

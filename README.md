@@ -1,11 +1,12 @@
 # BoltQ
 
-High-performance message queue server written in Go. Zero external dependencies.
+High-performance message queue server written in Go.
 
 ## Features
 
 - **Work Queue**: 1 message → 1 consumer (like RabbitMQ)
 - **Pub/Sub**: 1 message → all subscribers (like Redis PubSub)
+- **Quorum Queue Cluster**: Raft-based replication with automatic leader election (like RabbitMQ Quorum Queues)
 - **TCP Binary Protocol**: Low-latency binary framing protocol (port 9091)
 - **HTTP REST API**: JSON-based REST interface (port 9090)
 - **ACK/NACK**: Consumer acknowledgment with timeout
@@ -66,6 +67,9 @@ Max frame size: 4MB.
 | PING | `0x06` | Health check |
 | STATS | `0x07` | Get queue statistics |
 | AUTH | `0x08` | Authenticate with API key |
+| CLUSTER_JOIN | `0x10` | Join a node to the cluster |
+| CLUSTER_LEAVE | `0x11` | Remove a node from the cluster |
+| CLUSTER_STATUS | `0x12` | Get cluster status |
 
 ### Response Status
 
@@ -74,6 +78,7 @@ Max frame size: 4MB.
 | OK | `0x00` | Success |
 | ERROR | `0x01` | Error (payload contains JSON error) |
 | EMPTY | `0x02` | No message available |
+| NOT_LEADER | `0x03` | Not the leader (payload contains leader address) |
 
 ### Go TCP Client
 

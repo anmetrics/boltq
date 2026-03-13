@@ -108,6 +108,21 @@ func (q *Queue) Close() {
 	q.notEmpty.Broadcast()
 }
 
+// Drain returns all messages in the queue without removing them (for snapshots).
+func (q *Queue) Drain() []*protocol.Message {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	count := atomic.LoadInt64(&q.size)
+	msgs := make([]*protocol.Message, 0, count)
+	for i := uint64(0); i < uint64(count); i++ {
+		pos := (q.tail + i) & q.mask
+		if q.buf[pos] != nil {
+			msgs = append(msgs, q.buf[pos])
+		}
+	}
+	return msgs
+}
+
 func nextPowerOfTwo(n int) int {
 	if n <= 0 {
 		return 1

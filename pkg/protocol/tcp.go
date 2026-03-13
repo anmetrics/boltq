@@ -15,14 +15,18 @@ const (
 	CmdNack         byte = 0x05
 	CmdPing         byte = 0x06
 	CmdStats        byte = 0x07
-	CmdAuth         byte = 0x08
+	CmdAuth          byte = 0x08
+	CmdClusterJoin   byte = 0x10
+	CmdClusterLeave  byte = 0x11
+	CmdClusterStatus byte = 0x12
 )
 
 // Response status bytes.
 const (
-	StatusOK    byte = 0x00
-	StatusError byte = 0x01
-	StatusEmpty byte = 0x02
+	StatusOK        byte = 0x00
+	StatusError     byte = 0x01
+	StatusEmpty     byte = 0x02
+	StatusNotLeader byte = 0x03
 )
 
 // MaxFrameSize is the maximum allowed payload size (4MB).
