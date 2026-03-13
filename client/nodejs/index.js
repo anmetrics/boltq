@@ -1,90 +1,124 @@
 /**
  * BoltQ Node.js Client SDK
- * Zero-dependency client for the BoltQ message queue server.
- * Requires Node.js 18+ (native fetch).
+ * TCP protocol client for the BoltQ message queue server.
+ * Uses native net.Socket for persistent TCP connections.
  */
 
+import { Socket } from 'net';
+import { EventEmitter } from 'events';
+
+// Command bytes (must match server protocol)
+const CMD_PUBLISH       = 0x01;
+const CMD_PUBLISH_TOPIC = 0x02;
+const CMD_CONSUME       = 0x03;
+const CMD_ACK           = 0x04;
+const CMD_NACK          = 0x05;
+const CMD_PING          = 0x06;
+const CMD_STATS         = 0x07;
+const CMD_AUTH          = 0x08;
+
+// Response status bytes
+const STATUS_OK    = 0x00;
+const STATUS_ERROR = 0x01;
+const STATUS_EMPTY = 0x02;
+
+// Frame header: 1 byte command + 4 bytes LE length = 5 bytes
+const HEADER_SIZE = 5;
+
 export class BoltQError extends Error {
-  constructor(message, statusCode, body) {
+  constructor(message, code) {
     super(message);
     this.name = 'BoltQError';
-    this.statusCode = statusCode;
-    this.body = body;
+    this.code = code || 'BOLTQ_ERROR';
   }
 }
 
-export class BoltQClient {
+export class BoltQClient extends EventEmitter {
   /**
-   * @param {string} baseURL - The base URL of the BoltQ server (e.g. "http://localhost:9090")
+   * @param {string} host - Server hostname (e.g. "localhost")
+   * @param {number} port - Server TCP port (e.g. 9091)
    * @param {object} [options]
-   * @param {string} [options.apiKey] - API key for authentication (sent as X-API-Key header)
+   * @param {string} [options.apiKey] - API key for authentication
    * @param {number} [options.timeout] - Request timeout in milliseconds (default: 30000)
    */
-  constructor(baseURL, options = {}) {
-    this.baseURL = baseURL.replace(/\/+$/, '');
+  constructor(host, port, options = {}) {
+    super();
+    this.host = host;
+    this.port = port;
     this.apiKey = options.apiKey || null;
     this.timeout = options.timeout ?? 30000;
+
+    /** @type {Socket|null} */
+    this._socket = null;
+    this._connected = false;
+    this._authenticated = false;
+
+    // Request queue for serializing commands over a single connection
+    this._pending = []; // [{resolve, reject, timer}]
+    this._buffer = Buffer.alloc(0);
   }
 
   /**
-   * Build common headers for requests.
-   * @returns {Record<string, string>}
+   * Connect to the server and authenticate if apiKey is set.
+   * @returns {Promise<void>}
    */
-  _headers() {
-    const h = { 'Content-Type': 'application/json' };
+  async connect() {
+    if (this._connected) return;
+
+    await new Promise((resolve, reject) => {
+      this._socket = new Socket();
+
+      const onError = (err) => {
+        this._socket.removeListener('connect', onConnect);
+        reject(new BoltQError(`Connection failed: ${err.message}`, 'CONNECT_ERROR'));
+      };
+
+      const onConnect = () => {
+        this._socket.removeListener('error', onError);
+        this._connected = true;
+
+        this._socket.on('data', (chunk) => this._onData(chunk));
+        this._socket.on('error', (err) => this._onError(err));
+        this._socket.on('close', () => this._onClose());
+
+        resolve();
+      };
+
+      this._socket.once('error', onError);
+      this._socket.once('connect', onConnect);
+      this._socket.connect(this.port, this.host);
+    });
+
+    // Authenticate if API key is set
     if (this.apiKey) {
-      h['X-API-Key'] = this.apiKey;
-    }
-    return h;
-  }
-
-  /**
-   * Internal fetch wrapper with timeout and error handling.
-   * @param {string} path
-   * @param {RequestInit} [init]
-   * @returns {Promise<Response>}
-   */
-  async _fetch(path, init = {}) {
-    const url = `${this.baseURL}${path}`;
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.timeout);
-
-    try {
-      const res = await fetch(url, {
-        ...init,
-        signal: controller.signal,
-        headers: { ...this._headers(), ...init.headers },
-      });
-      return res;
-    } catch (err) {
-      if (err.name === 'AbortError') {
-        throw new BoltQError(`Request to ${path} timed out after ${this.timeout}ms`, 0, null);
+      const res = await this._sendCommand(CMD_AUTH, { api_key: this.apiKey });
+      if (res.status !== STATUS_OK) {
+        this.disconnect();
+        const payload = res.payload ? JSON.parse(res.payload) : {};
+        throw new BoltQError(payload.error || 'Authentication failed', 'AUTH_ERROR');
       }
-      throw new BoltQError(`Request to ${path} failed: ${err.message}`, 0, null);
-    } finally {
-      clearTimeout(timer);
     }
+    this._authenticated = true;
   }
 
   /**
-   * Internal helper: fetch + assert success + parse JSON.
-   * @param {string} path
-   * @param {RequestInit} [init]
-   * @returns {Promise<any>}
+   * Disconnect from the server.
    */
-  async _request(path, init = {}) {
-    const res = await this._fetch(path, init);
-    if (!res.ok) {
-      let body = null;
-      try { body = await res.text(); } catch { /* ignore */ }
-      throw new BoltQError(
-        `BoltQ ${init.method || 'GET'} ${path} returned ${res.status}`,
-        res.status,
-        body,
-      );
+  disconnect() {
+    if (this._socket) {
+      this._socket.destroy();
+      this._socket = null;
     }
-    const text = await res.text();
-    return text ? JSON.parse(text) : null;
+    this._connected = false;
+    this._authenticated = false;
+
+    // Reject all pending requests
+    for (const p of this._pending) {
+      clearTimeout(p.timer);
+      p.reject(new BoltQError('Connection closed', 'CLOSED'));
+    }
+    this._pending = [];
+    this._buffer = Buffer.alloc(0);
   }
 
   // ---------------------------------------------------------------------------
@@ -94,18 +128,15 @@ export class BoltQClient {
   /**
    * Publish a message to a queue topic.
    * @param {string} topic
-   * @param {any} payload - Will be JSON-stringified if not already a string.
-   * @param {Record<string, string>} [headers] - Optional message headers.
+   * @param {any} payload
+   * @param {Record<string, string>} [headers]
    * @returns {Promise<{id: string, topic: string}>}
    */
   async publish(topic, payload, headers) {
-    return this._request('/publish', {
-      method: 'POST',
-      body: JSON.stringify({
-        topic,
-        payload: typeof payload === 'string' ? payload : JSON.stringify(payload),
-        headers: headers || {},
-      }),
+    return this._command(CMD_PUBLISH, {
+      topic,
+      payload: typeof payload === 'string' ? payload : JSON.stringify(payload),
+      headers: headers || {},
     });
   }
 
@@ -117,146 +148,53 @@ export class BoltQClient {
    * @returns {Promise<{id: string, topic: string}>}
    */
   async publishTopic(topic, payload, headers) {
-    return this._request('/publish/topic', {
-      method: 'POST',
-      body: JSON.stringify({
-        topic,
-        payload: typeof payload === 'string' ? payload : JSON.stringify(payload),
-        headers: headers || {},
-      }),
+    return this._command(CMD_PUBLISH_TOPIC, {
+      topic,
+      payload: typeof payload === 'string' ? payload : JSON.stringify(payload),
+      headers: headers || {},
     });
   }
 
   /**
    * Consume a single message from a queue topic.
-   * Returns null when there are no messages available (204 No Content).
+   * Returns null when no messages are available.
    * @param {string} topic
    * @returns {Promise<object|null>}
    */
   async consume(topic) {
-    const res = await this._fetch(`/consume?topic=${encodeURIComponent(topic)}`, {
-      method: 'GET',
-    });
-
-    if (res.status === 204) {
-      return null;
+    const res = await this._sendCommand(CMD_CONSUME, { topic });
+    if (res.status === STATUS_EMPTY) return null;
+    if (res.status === STATUS_ERROR) {
+      const payload = res.payload.length > 0 ? JSON.parse(res.payload) : {};
+      throw new BoltQError(payload.error || 'Consume failed', 'CONSUME_ERROR');
     }
-
-    if (!res.ok) {
-      let body = null;
-      try { body = await res.text(); } catch { /* ignore */ }
-      throw new BoltQError(`BoltQ GET /consume returned ${res.status}`, res.status, body);
-    }
-
-    return res.json();
+    return JSON.parse(res.payload);
   }
 
   /**
-   * Acknowledge (complete) a consumed message.
+   * Acknowledge a consumed message.
    * @param {string} messageId
    * @returns {Promise<void>}
    */
   async ack(messageId) {
-    await this._request('/ack', {
-      method: 'POST',
-      body: JSON.stringify({ id: messageId }),
-    });
+    await this._command(CMD_ACK, { id: messageId });
   }
 
   /**
-   * Negatively acknowledge a message so it can be redelivered.
+   * Negatively acknowledge a message for redelivery.
    * @param {string} messageId
    * @returns {Promise<void>}
    */
   async nack(messageId) {
-    await this._request('/nack', {
-      method: 'POST',
-      body: JSON.stringify({ id: messageId }),
-    });
+    await this._command(CMD_NACK, { id: messageId });
   }
 
   /**
-   * Subscribe to a pub/sub topic via Server-Sent Events.
-   *
-   * The callback receives each message object as it arrives.
-   * Returns an unsubscribe function that closes the connection.
-   *
-   * @param {string} topic
-   * @param {string} subscriberId - Unique subscriber identifier.
-   * @param {(message: object) => void} callback
-   * @returns {() => void} unsubscribe function
+   * Ping the server.
+   * @returns {Promise<void>}
    */
-  subscribe(topic, subscriberId, callback) {
-    const controller = new AbortController();
-    const url = `${this.baseURL}/subscribe?topic=${encodeURIComponent(topic)}&id=${encodeURIComponent(subscriberId)}`;
-
-    const headers = {};
-    if (this.apiKey) {
-      headers['X-API-Key'] = this.apiKey;
-    }
-
-    const run = async () => {
-      try {
-        const res = await fetch(url, {
-          headers,
-          signal: controller.signal,
-        });
-
-        if (!res.ok) {
-          throw new BoltQError(
-            `BoltQ subscribe returned ${res.status}`,
-            res.status,
-            null,
-          );
-        }
-
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-
-          buffer += decoder.decode(value, { stream: true });
-
-          // Parse SSE frames: lines starting with "data: " separated by blank lines
-          const parts = buffer.split('\n\n');
-          // Keep the last (potentially incomplete) chunk in the buffer
-          buffer = parts.pop() || '';
-
-          for (const part of parts) {
-            const lines = part.split('\n');
-            let data = '';
-            for (const line of lines) {
-              if (line.startsWith('data: ')) {
-                data += line.slice(6);
-              } else if (line.startsWith('data:')) {
-                data += line.slice(5);
-              }
-            }
-            if (data) {
-              try {
-                callback(JSON.parse(data));
-              } catch {
-                // If not valid JSON, pass raw string
-                callback(data);
-              }
-            }
-          }
-        }
-      } catch (err) {
-        if (err.name === 'AbortError') return; // expected on unsubscribe
-        throw err;
-      }
-    };
-
-    run().catch((err) => {
-      // Surface unexpected errors; AbortError is swallowed above.
-      console.error('[boltq-client] subscribe error:', err);
-    });
-
-    return () => controller.abort();
+  async ping() {
+    await this._command(CMD_PING, {});
   }
 
   /**
@@ -264,32 +202,147 @@ export class BoltQClient {
    * @returns {Promise<object>}
    */
   async stats() {
-    return this._request('/stats');
+    return this._command(CMD_STATS, {});
   }
 
   /**
-   * Get Prometheus-format metrics as a string.
-   * @returns {Promise<string>}
-   */
-  async metrics() {
-    const res = await this._fetch('/metrics');
-    if (!res.ok) {
-      throw new BoltQError(`BoltQ GET /metrics returned ${res.status}`, res.status, null);
-    }
-    return res.text();
-  }
-
-  /**
-   * Health check. Returns true if the server is healthy, false otherwise.
+   * Health check. Returns true if ping succeeds.
    * @returns {Promise<boolean>}
    */
   async health() {
     try {
-      const data = await this._request('/health');
-      return data?.status === 'ok';
+      await this.ping();
+      return true;
     } catch {
       return false;
     }
+  }
+
+  /**
+   * Start polling a queue topic.
+   * @param {string} topic
+   * @param {(msg: object) => Promise<void>} handler
+   * @param {number} [intervalMs=1000]
+   * @returns {{ stop: () => void }}
+   */
+  startConsumer(topic, handler, intervalMs = 1000) {
+    let running = true;
+
+    const poll = async () => {
+      while (running) {
+        try {
+          const msg = await this.consume(topic);
+          if (msg) {
+            try {
+              await handler(msg);
+              await this.ack(msg.id);
+            } catch (err) {
+              console.error(`[boltq] handler error for ${msg.id}: ${err}`);
+              try { await this.nack(msg.id); } catch { /* ignore */ }
+            }
+          } else {
+            await new Promise((r) => setTimeout(r, intervalMs));
+          }
+        } catch (err) {
+          if (!running) break;
+          console.error(`[boltq] poll error on "${topic}": ${err}`);
+          await new Promise((r) => setTimeout(r, intervalMs * 2));
+        }
+      }
+    };
+
+    poll();
+    return { stop: () => { running = false; } };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Internal
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Send a command and parse the response, throwing on error.
+   */
+  async _command(cmd, data) {
+    const res = await this._sendCommand(cmd, data);
+    if (res.status === STATUS_ERROR) {
+      const payload = res.payload.length > 0 ? JSON.parse(res.payload) : {};
+      throw new BoltQError(payload.error || 'Server error', 'SERVER_ERROR');
+    }
+    if (res.payload.length === 0) return null;
+    return JSON.parse(res.payload);
+  }
+
+  /**
+   * Send a raw command frame and wait for the response frame.
+   * @returns {Promise<{status: number, payload: Buffer}>}
+   */
+  _sendCommand(cmd, data) {
+    if (!this._connected) {
+      return Promise.reject(new BoltQError('Not connected', 'NOT_CONNECTED'));
+    }
+
+    return new Promise((resolve, reject) => {
+      const payload = Buffer.from(JSON.stringify(data), 'utf-8');
+      const frame = Buffer.alloc(HEADER_SIZE + payload.length);
+      frame[0] = cmd;
+      frame.writeUInt32LE(payload.length, 1);
+      payload.copy(frame, HEADER_SIZE);
+
+      const timer = setTimeout(() => {
+        const idx = this._pending.findIndex((p) => p.resolve === resolve);
+        if (idx !== -1) this._pending.splice(idx, 1);
+        reject(new BoltQError('Request timed out', 'TIMEOUT'));
+      }, this.timeout);
+
+      this._pending.push({ resolve, reject, timer });
+      this._socket.write(frame);
+    });
+  }
+
+  /**
+   * Handle incoming data, buffering and extracting complete frames.
+   */
+  _onData(chunk) {
+    this._buffer = Buffer.concat([this._buffer, chunk]);
+    this._drain();
+  }
+
+  /**
+   * Try to extract complete frames from the buffer.
+   */
+  _drain() {
+    while (this._buffer.length >= HEADER_SIZE) {
+      const length = this._buffer.readUInt32LE(1);
+      const totalSize = HEADER_SIZE + length;
+      if (this._buffer.length < totalSize) break;
+
+      const status = this._buffer[0];
+      const payload = this._buffer.subarray(HEADER_SIZE, totalSize);
+      this._buffer = this._buffer.subarray(totalSize);
+
+      const pending = this._pending.shift();
+      if (pending) {
+        clearTimeout(pending.timer);
+        pending.resolve({ status, payload });
+      }
+    }
+  }
+
+  _onError(err) {
+    this.emit('error', err);
+  }
+
+  _onClose() {
+    this._connected = false;
+    this.emit('close');
+
+    // Reject remaining pending requests
+    for (const p of this._pending) {
+      clearTimeout(p.timer);
+      p.reject(new BoltQError('Connection closed', 'CLOSED'));
+    }
+    this._pending = [];
+    this._buffer = Buffer.alloc(0);
   }
 }
 

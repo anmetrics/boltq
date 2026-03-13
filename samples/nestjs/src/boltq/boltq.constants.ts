@@ -1,5 +1,6 @@
 export interface BoltQModuleOptions {
-  baseURL: string;
+  host: string;
+  port: number;
   apiKey?: string;
   timeout?: number;
 }

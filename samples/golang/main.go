@@ -17,7 +17,7 @@ import (
 var client *boltq.Client
 
 func main() {
-	boltqURL := envOr("BOLTQ_URL", "http://localhost:9090")
+	boltqAddr := envOr("BOLTQ_ADDR", "localhost:9091")
 	apiKey := os.Getenv("BOLTQ_API_KEY")
 	listenAddr := envOr("LISTEN_ADDR", ":3000")
 
@@ -25,7 +25,12 @@ func main() {
 	if apiKey != "" {
 		opts = append(opts, boltq.WithAPIKey(apiKey))
 	}
-	client = boltq.New(boltqURL, opts...)
+	client = boltq.New(boltqAddr, opts...)
+
+	if err := client.Connect(); err != nil {
+		log.Fatalf("failed to connect to BoltQ: %v", err)
+	}
+	defer client.Close()
 
 	// Start background order consumer
 	ctx, cancel := context.WithCancel(context.Background())

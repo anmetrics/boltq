@@ -1,9 +1,12 @@
 /**
  * BoltQ Node.js Client SDK - TypeScript Definitions
+ * TCP protocol client.
  */
 
+import { EventEmitter } from 'events';
+
 export interface BoltQClientOptions {
-  /** API key for authentication (sent as X-API-Key header). */
+  /** API key for authentication. */
   apiKey?: string;
   /** Request timeout in milliseconds. Default: 30000. */
   timeout?: number;
@@ -19,71 +22,71 @@ export interface Message {
   topic: string;
   payload: string;
   headers?: Record<string, string>;
+  timestamp?: number;
+  retry?: number;
   [key: string]: unknown;
+}
+
+export interface Consumer {
+  stop(): void;
 }
 
 export declare class BoltQError extends Error {
   name: 'BoltQError';
-  statusCode: number;
-  body: string | null;
-  constructor(message: string, statusCode: number, body: string | null);
+  code: string;
+  constructor(message: string, code?: string);
 }
 
-export declare class BoltQClient {
-  readonly baseURL: string;
+export declare class BoltQClient extends EventEmitter {
+  readonly host: string;
+  readonly port: number;
 
-  constructor(baseURL: string, options?: BoltQClientOptions);
+  constructor(host: string, port: number, options?: BoltQClientOptions);
 
-  /**
-   * Publish a message to a queue topic.
-   * Non-string payloads are JSON-stringified automatically.
-   */
+  /** Connect to the server and authenticate if apiKey is set. */
+  connect(): Promise<void>;
+
+  /** Disconnect from the server. */
+  disconnect(): void;
+
+  /** Publish a message to a queue topic. */
   publish(
     topic: string,
     payload: unknown,
     headers?: Record<string, string>,
   ): Promise<PublishResult>;
 
-  /**
-   * Publish a message to a pub/sub topic.
-   * Non-string payloads are JSON-stringified automatically.
-   */
+  /** Publish a message to a pub/sub topic. */
   publishTopic(
     topic: string,
     payload: unknown,
     headers?: Record<string, string>,
   ): Promise<PublishResult>;
 
-  /**
-   * Consume a single message from a queue topic.
-   * Returns null when no messages are available.
-   */
+  /** Consume a single message from a queue topic. Returns null if empty. */
   consume(topic: string): Promise<Message | null>;
 
-  /** Acknowledge (complete) a consumed message. */
+  /** Acknowledge a consumed message. */
   ack(messageId: string): Promise<void>;
 
   /** Negatively acknowledge a message for redelivery. */
   nack(messageId: string): Promise<void>;
 
-  /**
-   * Subscribe to a pub/sub topic via Server-Sent Events.
-   * Returns an unsubscribe function that closes the connection.
-   */
-  subscribe(
-    topic: string,
-    subscriberId: string,
-    callback: (message: Message) => void,
-  ): () => void;
+  /** Ping the server. */
+  ping(): Promise<void>;
 
   /** Get broker statistics. */
   stats(): Promise<Record<string, unknown>>;
 
-  /** Get Prometheus-format metrics as a raw string. */
-  metrics(): Promise<string>;
-
-  /** Health check. Returns true if the server is healthy. */
+  /** Health check. Returns true if ping succeeds. */
   health(): Promise<boolean>;
+
+  /** Start polling a queue topic. Returns a handle with stop(). */
+  startConsumer(
+    topic: string,
+    handler: (msg: Message) => Promise<void>,
+    intervalMs?: number,
+  ): Consumer;
 }
 
 export default BoltQClient;

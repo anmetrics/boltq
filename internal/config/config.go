@@ -18,6 +18,7 @@ type Config struct {
 
 type ServerConfig struct {
 	HTTPPort int    `json:"http_port"`
+	TCPPort  int    `json:"tcp_port"`
 	GRPCPort int    `json:"grpc_port"`
 	Host     string `json:"host"`
 }
@@ -46,7 +47,8 @@ func Default() *Config {
 	return &Config{
 		Server: ServerConfig{
 			HTTPPort: 9090,
-			GRPCPort: 9091,
+			TCPPort:  9091,
+			GRPCPort: 9092,
 			Host:     "0.0.0.0",
 		},
 		Storage: StorageConfig{

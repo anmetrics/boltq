@@ -34,6 +34,9 @@ func main() {
 	if port := os.Getenv("BOLTQ_HTTP_PORT"); port != "" {
 		fmt.Sscanf(port, "%d", &cfg.Server.HTTPPort)
 	}
+	if port := os.Getenv("BOLTQ_TCP_PORT"); port != "" {
+		fmt.Sscanf(port, "%d", &cfg.Server.TCPPort)
+	}
 	if mode := os.Getenv("BOLTQ_STORAGE_MODE"); mode != "" {
 		cfg.Storage.Mode = mode
 	}
@@ -83,19 +86,26 @@ func main() {
 	sched := scheduler.New(b, time.Second)
 	sched.Start()
 
-	// Start HTTP server.
+	// Start servers.
 	m := metrics.Global()
+
+	// Start TCP server.
+	tcpServer := api.NewTCPServer(b, m, cfg.Security.APIKey)
+	tcpAddr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.TCPPort)
+	if err := tcpServer.Start(tcpAddr); err != nil {
+		log.Fatalf("[server] failed to start TCP server: %v", err)
+	}
+
+	// Start HTTP server.
 	httpServer := api.NewHTTPServer(b, m, cfg.Security.APIKey)
-
-	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.HTTPPort)
-
+	httpAddr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.HTTPPort)
 	go func() {
-		if err := httpServer.Start(addr); err != nil {
+		if err := httpServer.Start(httpAddr); err != nil {
 			log.Printf("[server] HTTP server stopped: %v", err)
 		}
 	}()
 
-	log.Printf("[server] BoltQ started on %s", addr)
+	log.Printf("[server] BoltQ started (HTTP=%s, TCP=%s)", httpAddr, tcpAddr)
 
 	// Wait for shutdown signal.
 	sigCh := make(chan os.Signal, 1)
@@ -103,6 +113,7 @@ func main() {
 	sig := <-sigCh
 	log.Printf("[server] received signal %s, shutting down...", sig)
 
+	tcpServer.Shutdown()
 	httpServer.Shutdown()
 	sched.Stop()
 	b.Close()

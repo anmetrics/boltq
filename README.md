@@ -6,6 +6,8 @@ High-performance message queue server written in Go. Zero external dependencies.
 
 - **Work Queue**: 1 message → 1 consumer (like RabbitMQ)
 - **Pub/Sub**: 1 message → all subscribers (like Redis PubSub)
+- **TCP Binary Protocol**: Low-latency binary framing protocol (port 9091)
+- **HTTP REST API**: JSON-based REST interface (port 9090)
 - **ACK/NACK**: Consumer acknowledgment with timeout
 - **Retry**: Exponential retry with configurable max retries
 - **Dead Letter Queue**: Failed messages after max retries
@@ -29,7 +31,7 @@ High-performance message queue server written in Go. Zero external dependencies.
 # Build
 make build
 
-# Run server
+# Run server (starts HTTP on :9090 and TCP on :9091)
 ./bin/boltq-server
 
 # With config
@@ -37,10 +39,83 @@ make build
 
 # With Docker
 docker build -t boltq .
-docker run -p 9090:9090 boltq
+docker run -p 9090:9090 -p 9091:9091 boltq
 ```
 
-## API
+## TCP Protocol
+
+BoltQ supports a binary TCP protocol for lower latency and higher throughput compared to HTTP.
+
+### Wire Format
+
+```
+[command: 1 byte][length: 4 bytes LE][payload: N bytes JSON]
+```
+
+Max frame size: 4MB.
+
+### Commands
+
+| Command | Byte | Description |
+|---------|------|-------------|
+| PUBLISH | `0x01` | Publish to work queue |
+| PUBLISH_TOPIC | `0x02` | Publish to pub/sub topic |
+| CONSUME | `0x03` | Consume from queue |
+| ACK | `0x04` | Acknowledge message |
+| NACK | `0x05` | Negative acknowledge (retry) |
+| PING | `0x06` | Health check |
+| STATS | `0x07` | Get queue statistics |
+| AUTH | `0x08` | Authenticate with API key |
+
+### Response Status
+
+| Status | Byte | Description |
+|--------|------|-------------|
+| OK | `0x00` | Success |
+| ERROR | `0x01` | Error (payload contains JSON error) |
+| EMPTY | `0x02` | No message available |
+
+### Go TCP Client
+
+```go
+import boltq "github.com/boltq/boltq/client/golang"
+
+// Connect via TCP
+client := boltq.New("localhost:9091")
+if err := client.Connect(); err != nil {
+    log.Fatal(err)
+}
+defer client.Close()
+
+// Publish to work queue
+id, err := client.Publish("email_jobs", map[string]interface{}{
+    "to": "user@example.com",
+}, nil)
+
+// Consume
+msg, err := client.Consume("email_jobs")
+if msg != nil {
+    client.Ack(msg.ID)
+}
+
+// Ping
+err = client.Ping()
+
+// Stats
+stats, err := client.Stats()
+```
+
+### Client Options
+
+```go
+// With API key authentication
+client := boltq.New("localhost:9091", boltq.WithAPIKey("your-secret-key"))
+
+// With custom timeout
+client := boltq.New("localhost:9091", boltq.WithTimeout(5 * time.Second))
+```
+
+## HTTP API
 
 ### Publish (Work Queue)
 
@@ -109,10 +184,15 @@ curl http://localhost:9090/health
 ```go
 import boltq "github.com/boltq/boltq/client/golang"
 
-client := boltq.New("http://localhost:9090")
+// Connect via TCP (recommended for performance)
+client := boltq.New("localhost:9091")
+if err := client.Connect(); err != nil {
+    log.Fatal(err)
+}
+defer client.Close()
 
 // Publish
-id, err := client.Publish("email_jobs", map[string]string{"to": "user@example.com"}, nil)
+id, err := client.Publish("email_jobs", map[string]interface{}{"to": "user@example.com"}, nil)
 
 // Consume
 msg, err := client.Consume("email_jobs")
@@ -153,7 +233,8 @@ JSON config file (`configs/default.json`):
 {
   "server": {
     "http_port": 9090,
-    "grpc_port": 9091,
+    "tcp_port": 9091,
+    "grpc_port": 9092,
     "host": "0.0.0.0"
   },
   "storage": {
@@ -179,6 +260,7 @@ JSON config file (`configs/default.json`):
 | Variable | Description |
 |----------|-------------|
 | `BOLTQ_HTTP_PORT` | HTTP server port |
+| `BOLTQ_TCP_PORT` | TCP server port |
 | `BOLTQ_STORAGE_MODE` | `memory` or `disk` |
 | `BOLTQ_DATA_DIR` | WAL data directory |
 | `BOLTQ_API_KEY` | API key for auth |
@@ -209,7 +291,7 @@ boltq/
     queue/      # Lock-free ring buffer queue
     storage/    # Storage interface + implementations
     wal/        # Write-Ahead Log
-    api/        # HTTP REST API
+    api/        # HTTP REST + TCP binary API
     scheduler/  # ACK timeout watcher
     config/     # Configuration
     metrics/    # Prometheus metrics
