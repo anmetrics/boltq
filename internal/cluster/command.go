@@ -15,14 +15,20 @@ const (
 	CmdRaftNack         CommandType = 3
 	CmdRaftPublishTopic CommandType = 4
 	CmdRaftConsume      CommandType = 5
+	CmdRaftPromote      CommandType = 6
+	CmdRaftPurge        CommandType = 7
+	CmdRaftPurgeDL      CommandType = 8
+	CmdRaftSubscribe    CommandType = 9
+	CmdRaftUnsubscribe  CommandType = 10
 )
 
 // RaftCommand is the payload serialized into each Raft log entry.
 type RaftCommand struct {
-	Type      CommandType       `json:"type"`
-	Topic     string            `json:"topic,omitempty"`
-	Message   *protocol.Message `json:"message,omitempty"`
-	MessageID string            `json:"message_id,omitempty"`
+	Type         CommandType       `json:"type"`
+	Topic        string            `json:"topic,omitempty"`
+	Message      *protocol.Message `json:"message,omitempty"`
+	MessageID    string            `json:"message_id,omitempty"`
+	SubscriberID string            `json:"subscriber_id,omitempty"`
 }
 
 // Encode serializes the command to JSON bytes.

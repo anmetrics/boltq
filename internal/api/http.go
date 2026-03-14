@@ -12,6 +12,7 @@ import (
 	"github.com/boltq/boltq/internal/cluster"
 	"github.com/boltq/boltq/internal/config"
 	"github.com/boltq/boltq/internal/metrics"
+	"github.com/boltq/boltq/pkg/protocol"
 )
 
 // HTTPServer provides the admin REST API (stats, metrics, health, cluster management).
@@ -49,6 +50,11 @@ func (s *HTTPServer) registerRoutes() {
 	// Queue management.
 	s.mux.HandleFunc("/queues/purge", s.cors(s.auth(s.handlePurgeQueue)))
 	s.mux.HandleFunc("/dead-letters/purge", s.cors(s.auth(s.handlePurgeDeadLetters)))
+
+	// Messaging endpoints (for testing/k6/web).
+	s.mux.HandleFunc("/publish", s.cors(s.auth(s.handlePublish)))
+	s.mux.HandleFunc("/consume", s.cors(s.auth(s.handleConsume)))
+	s.mux.HandleFunc("/ack", s.cors(s.auth(s.handleAck)))
 
 	// Cluster management routes.
 	s.mux.HandleFunc("/cluster/join", s.cors(s.auth(s.handleClusterJoin)))
@@ -261,6 +267,101 @@ func (s *HTTPServer) handlePurgeDeadLetters(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"status": "purged", "queue": req.Queue, "purged_count": count,
 	})
+}
+
+// --- Messaging: Publish ---
+
+func (s *HTTPServer) handlePublish(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req struct {
+		Topic   string          `json:"topic"`
+		Payload json.RawMessage `json:"payload"`
+		Delay   int64           `json:"delay"`
+		TTL     int64           `json:"ttl"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if req.Topic == "" {
+		writeError(w, http.StatusBadRequest, "topic is required")
+		return
+	}
+
+	msg := protocol.NewMessage(req.Topic, req.Payload, nil)
+	msg.Delay = req.Delay
+	msg.TTL = req.TTL
+
+	if err := s.broker.Publish(req.Topic, msg); err != nil {
+		if nle, ok := cluster.IsNotLeaderError(err); ok {
+			writeJSON(w, http.StatusTemporaryRedirect, map[string]string{
+				"error": "not leader", "leader": nle.Leader, "leader_id": nle.LeaderID,
+			})
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "published", "id": msg.ID})
+}
+
+// --- Messaging: Consume ---
+
+func (s *HTTPServer) handleConsume(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	topic := r.URL.Query().Get("topic")
+	if topic == "" {
+		writeError(w, http.StatusBadRequest, "topic is required")
+		return
+	}
+
+	msg := s.broker.Consume(topic)
+	if msg == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "no messages available"})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, msg)
+}
+
+// --- Messaging: Ack ---
+
+func (s *HTTPServer) handleAck(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if req.ID == "" {
+		writeError(w, http.StatusBadRequest, "id is required")
+		return
+	}
+
+	if err := s.broker.Ack(req.ID); err != nil {
+		if nle, ok := cluster.IsNotLeaderError(err); ok {
+			writeJSON(w, http.StatusTemporaryRedirect, map[string]string{
+				"error": "not leader", "leader": nle.Leader, "leader_id": nle.LeaderID,
+			})
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "acked"})
 }
 
 // --- Cluster Join ---

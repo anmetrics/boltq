@@ -13,8 +13,9 @@ import (
 
 // ApplyResponse is returned from FSM.Apply to the caller via raft.ApplyFuture.
 type ApplyResponse struct {
-	Error   error
-	Message *protocol.Message // returned for consume commands
+	Error       error
+	Message     *protocol.Message // returned for consume commands
+	PurgedCount int64             // returned for purge commands
 }
 
 // BrokerFSM implements raft.FSM. It applies Raft log entries to the local broker.
@@ -55,6 +56,26 @@ func (f *BrokerFSM) Apply(log *raft.Log) interface{} {
 		err := f.broker.Nack(cmd.MessageID)
 		return &ApplyResponse{Error: err}
 
+	case CmdRaftPromote:
+		err := f.broker.PromoteDelayed(cmd.MessageID)
+		return &ApplyResponse{Error: err}
+
+	case CmdRaftPurge:
+		count, err := f.broker.PurgeQueue(cmd.Topic)
+		return &ApplyResponse{Error: err, PurgedCount: count}
+
+	case CmdRaftPurgeDL:
+		count, err := f.broker.PurgeDeadLetters(cmd.Topic)
+		return &ApplyResponse{Error: err, PurgedCount: count}
+
+	case CmdRaftSubscribe:
+		f.broker.RegisterDurableSub(cmd.Topic, cmd.SubscriberID)
+		return &ApplyResponse{}
+
+	case CmdRaftUnsubscribe:
+		f.broker.UnregisterDurableSub(cmd.Topic, cmd.SubscriberID)
+		return &ApplyResponse{}
+
 	default:
 		return &ApplyResponse{Error: fmt.Errorf("unknown command type: %d", cmd.Type)}
 	}
@@ -62,13 +83,13 @@ func (f *BrokerFSM) Apply(log *raft.Log) interface{} {
 
 // fsmSnapshotData is the JSON-serializable snapshot payload.
 type fsmSnapshotData struct {
-	Queues map[string][]*protocol.Message `json:"queues"`
+	State broker.FullState `json:"state"`
 }
 
 // Snapshot returns a point-in-time snapshot of the FSM state.
 func (f *BrokerFSM) Snapshot() (raft.FSMSnapshot, error) {
-	data := f.broker.SnapshotQueues()
-	return &FSMSnapshot{data: fsmSnapshotData{Queues: data}}, nil
+	data := f.broker.SnapshotFullState()
+	return &FSMSnapshot{data: fsmSnapshotData{State: data}}, nil
 }
 
 // Restore replaces the FSM state from a snapshot.
@@ -78,6 +99,6 @@ func (f *BrokerFSM) Restore(rc io.ReadCloser) error {
 	if err := json.NewDecoder(rc).Decode(&data); err != nil {
 		return fmt.Errorf("restore snapshot: %w", err)
 	}
-	f.broker.RestoreQueues(data.Queues)
+	f.broker.RestoreFullState(data.State)
 	return nil
 }

@@ -107,6 +107,10 @@ func New(cfg Config) *Broker {
 func (b *Broker) getOrCreateQueue(name string) *queue.Queue {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	return b.getOrCreateQueueLocked(name)
+}
+
+func (b *Broker) getOrCreateQueueLocked(name string) *queue.Queue {
 	q, ok := b.queues[name]
 	if !ok {
 		q = queue.New(name, b.queueCap)
@@ -119,6 +123,10 @@ func (b *Broker) getOrCreateQueue(name string) *queue.Queue {
 func (b *Broker) getOrCreateTopic(name string) *Topic {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	return b.getOrCreateTopicLocked(name)
+}
+
+func (b *Broker) getOrCreateTopicLocked(name string) *Topic {
 	t, ok := b.topics[name]
 	if !ok {
 		t = &Topic{
@@ -135,6 +143,10 @@ func (b *Broker) getOrCreateDeadLetter(name string) *queue.Queue {
 	dlName := name + "_dead_letter"
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	return b.getOrCreateDeadLetterLocked(dlName)
+}
+
+func (b *Broker) getOrCreateDeadLetterLocked(dlName string) *queue.Queue {
 	q, ok := b.deadLetters[dlName]
 	if !ok {
 		q = queue.New(dlName, b.queueCap)
@@ -181,6 +193,14 @@ func (b *Broker) Publish(topic string, msg *protocol.Message) error {
 // IngestRecovered adds a message to the broker without writing to WAL.
 // Used during startup recovery.
 func (b *Broker) IngestRecovered(msg *protocol.Message) {
+	now := time.Now().UnixNano()
+	if msg.DeliverAt > now {
+		b.mu.Lock()
+		b.delayed = append(b.delayed, msg)
+		b.mu.Unlock()
+		return
+	}
+
 	q := b.getOrCreateQueue(msg.Topic)
 	if !q.Push(msg) {
 		b.spillToDisk(msg.Topic, msg)
@@ -190,7 +210,10 @@ func (b *Broker) IngestRecovered(msg *protocol.Message) {
 func (b *Broker) spillToDisk(topic string, msg *protocol.Message) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	return b.spillToDiskLocked(topic, msg)
+}
 
+func (b *Broker) spillToDiskLocked(topic string, msg *protocol.Message) error {
 	if err := os.MkdirAll(b.spillDir, 0755); err != nil {
 		return fmt.Errorf("create spill dir: %w", err)
 	}
@@ -308,6 +331,20 @@ func (b *Broker) TryConsume(topic string) *protocol.Message {
 	}
 }
 
+// GetReadyDelayedMessages returns messages whose delay has expired but hasn't been promoted.
+func (b *Broker) GetReadyDelayedMessages() []*protocol.Message {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	now := time.Now().UnixNano()
+	var ready []*protocol.Message
+	for _, msg := range b.delayed {
+		if now >= msg.DeliverAt {
+			ready = append(ready, msg)
+		}
+	}
+	return ready
+}
+
 // ProcessAdvancedFeatures moves delayed messages to active queues and purges expired pending messages.
 func (b *Broker) ProcessAdvancedFeatures() {
 	now := time.Now().UnixNano()
@@ -344,6 +381,39 @@ func (b *Broker) ProcessAdvancedFeatures() {
 	b.reloadFromDisk()
 }
 
+// PromoteDelayed moves a delayed message to its active queue by its ID.
+func (b *Broker) PromoteDelayed(messageID string) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	var msg *protocol.Message
+	var index int = -1
+	for i, m := range b.delayed {
+		if m.ID == messageID {
+			msg = m
+			index = i
+			break
+		}
+	}
+
+	if msg == nil {
+		return fmt.Errorf("delayed message %s not found", messageID)
+	}
+
+	// Remove from delayed
+	b.delayed = append(b.delayed[:index], b.delayed[index+1:]...)
+
+	expectedID := messageID // simplify
+	_ = expectedID
+
+	q := b.getOrCreateQueueLocked(msg.Topic)
+	if !q.Push(msg) {
+		b.spillToDiskLocked(msg.Topic, msg)
+	}
+	return nil
+}
+
+// reloadFromDisk reloads messages from spill files if there is space in the queue.
 func (b *Broker) reloadFromDisk() {
 	b.mu.RLock()
 	topics := make([]string, 0, len(b.queues))
@@ -592,6 +662,25 @@ func (b *Broker) RequeueTimedOut(messageID string) error {
 	return b.retryOrDeadLetter(pm.Message, pm.QueueName)
 }
 
+// RegisterDurableSub registers a durable subscriber for a topic.
+func (b *Broker) RegisterDurableSub(topicName, subscriberID string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.durableSubs[topicName] == nil {
+		b.durableSubs[topicName] = make(map[string]bool)
+	}
+	b.durableSubs[topicName][subscriberID] = true
+}
+
+// UnregisterDurableSub removes a durable subscriber for a topic.
+func (b *Broker) UnregisterDurableSub(topicName, subscriberID string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if subs, ok := b.durableSubs[topicName]; ok {
+		delete(subs, subscriberID)
+	}
+}
+
 // PurgeQueue removes all messages from the specified queue.
 func (b *Broker) PurgeQueue(topic string) (int64, error) {
 	b.mu.RLock()
@@ -623,6 +712,7 @@ type Stats struct {
 	Topics       map[string]int
 	DeadLetters  map[string]int64
 	PendingCount int
+	DelayedCount int
 }
 
 func (b *Broker) Stats() Stats {
@@ -633,6 +723,7 @@ func (b *Broker) Stats() Stats {
 		Queues:      make(map[string]int64),
 		Topics:      make(map[string]int),
 		DeadLetters: make(map[string]int64),
+		DelayedCount: len(b.delayed),
 	}
 
 	for name, q := range b.queues {
@@ -653,34 +744,105 @@ func (b *Broker) Stats() Stats {
 	return s
 }
 
-// SnapshotQueues returns a snapshot of all queue contents (for Raft snapshots).
-func (b *Broker) SnapshotQueues() map[string][]*protocol.Message {
+// FullState represents the entire serializable state of the broker.
+type FullState struct {
+	Queues      map[string][]*protocol.Message `json:"queues"`
+	DeadLetters map[string][]*protocol.Message `json:"dead_letters,omitempty"`
+	Delayed     []*protocol.Message            `json:"delayed,omitempty"`
+	Pending     map[string]*PendingMessage     `json:"pending,omitempty"`
+	DurableSubs map[string]map[string]bool     `json:"durable_subs,omitempty"`
+}
+
+// SnapshotFullState returns a snapshot of the entire broker state (for Raft snapshots).
+func (b *Broker) SnapshotFullState() FullState {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
-	result := make(map[string][]*protocol.Message)
+
+	state := FullState{
+		Queues:      make(map[string][]*protocol.Message),
+		DeadLetters: make(map[string][]*protocol.Message),
+		Delayed:     make([]*protocol.Message, len(b.delayed)),
+	}
+
 	for name, q := range b.queues {
 		msgs := q.Drain()
 		if len(msgs) > 0 {
-			result[name] = msgs
+			state.Queues[name] = msgs
 		}
 	}
-	return result
+
+	for name, q := range b.deadLetters {
+		msgs := q.Drain()
+		if len(msgs) > 0 {
+			state.DeadLetters[name] = msgs
+		}
+	}
+
+	copy(state.Delayed, b.delayed)
+
+	b.pendingMu.RLock()
+	state.Pending = make(map[string]*PendingMessage, len(b.pending))
+	for k, v := range b.pending {
+		state.Pending[k] = v
+	}
+	b.pendingMu.RUnlock()
+
+	state.DurableSubs = make(map[string]map[string]bool)
+	for t, subs := range b.durableSubs {
+		m := make(map[string]bool)
+		for k, v := range subs {
+			m[k] = v
+		}
+		state.DurableSubs[t] = m
+	}
+
+	return state
 }
 
-// RestoreQueues rebuilds all queues from snapshot data.
-func (b *Broker) RestoreQueues(data map[string][]*protocol.Message) {
+// RestoreFullState rebuilds the broker state from snapshot data.
+func (b *Broker) RestoreFullState(state FullState) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+
+	// Shutdown existing queues
 	for _, q := range b.queues {
 		q.Close()
 	}
+	for _, q := range b.deadLetters {
+		q.Close()
+	}
+
 	b.queues = make(map[string]*queue.Queue)
-	for name, msgs := range data {
+	for name, msgs := range state.Queues {
 		q := queue.New(name, b.queueCap)
 		for _, msg := range msgs {
 			q.Push(msg)
 		}
 		b.queues[name] = q
+	}
+
+	b.deadLetters = make(map[string]*queue.Queue)
+	for name, msgs := range state.DeadLetters {
+		q := queue.New(name, b.queueCap)
+		for _, msg := range msgs {
+			q.Push(msg)
+		}
+		b.deadLetters[name] = q
+	}
+
+	b.delayed = state.Delayed
+
+	b.pendingMu.Lock()
+	b.pending = state.Pending
+	if b.pending == nil {
+		b.pending = make(map[string]*PendingMessage)
+	}
+	b.pendingMu.Unlock()
+
+	if state.DurableSubs != nil {
+		b.durableSubs = state.DurableSubs
+	} else {
+		b.durableSubs = make(map[string]map[string]bool)
 	}
 }
 
