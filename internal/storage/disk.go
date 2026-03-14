@@ -23,8 +23,24 @@ func (d *DiskStorage) Write(msg *protocol.Message) error {
 	return d.wal.Write(msg)
 }
 
-func (d *DiskStorage) ReadAll() ([]*protocol.Message, error) {
-	return d.wal.ReadAll()
+func (d *DiskStorage) ReadAllRecords() ([]*wal.WALRecord, error) {
+	records, err := d.wal.ReadAllRecords()
+	if err != nil {
+		return nil, err
+	}
+	var res []*wal.WALRecord
+	for _, r := range records {
+		res = append(res, &wal.WALRecord{
+			Type:    r.Type,
+			Message: r.Message,
+			MsgID:   r.MsgID,
+		})
+	}
+	return res, nil
+}
+
+func (d *DiskStorage) Ack(msgID string) error {
+	return d.wal.WriteAck(msgID)
 }
 
 func (d *DiskStorage) Close() error {

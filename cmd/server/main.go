@@ -20,6 +20,8 @@ import (
 	"github.com/boltq/boltq/internal/metrics"
 	"github.com/boltq/boltq/internal/scheduler"
 	"github.com/boltq/boltq/internal/storage"
+	"github.com/boltq/boltq/internal/wal"
+	"github.com/boltq/boltq/pkg/protocol"
 )
 
 func main() {
@@ -114,14 +116,34 @@ func main() {
 
 	// Recover from WAL if disk mode.
 	if store != nil {
-		messages, err := store.ReadAll()
+		records, err := store.ReadAllRecords()
 		if err != nil {
 			log.Printf("[server] WAL recovery warning: %v", err)
-		} else if len(messages) > 0 {
-			log.Printf("[server] recovering %d messages from WAL", len(messages))
-			for _, msg := range messages {
-				b.IngestRecovered(msg)
+		} else if len(records) > 0 {
+			log.Printf("[server] processsing %d records from WAL for recovery", len(records))
+			
+			// Process records in order, keeping track of what's still pending
+			msgs := make(map[string]*protocol.Message)
+			order := []string{}
+			
+			for _, rec := range records {
+				switch rec.Type {
+				case wal.RecordPublish:
+					msgs[rec.Message.ID] = rec.Message
+					order = append(order, rec.Message.ID)
+				case wal.RecordAck:
+					delete(msgs, rec.MsgID)
+				}
 			}
+			
+			recoveredCount := 0
+			for _, id := range order {
+				if msg, ok := msgs[id]; ok {
+					b.IngestRecovered(msg)
+					recoveredCount++
+				}
+			}
+			log.Printf("[server] recovered %d messages from WAL (order preserved)", recoveredCount)
 		}
 	}
 

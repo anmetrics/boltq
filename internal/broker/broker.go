@@ -524,6 +524,16 @@ func (b *Broker) Ack(messageID string) error {
 		return fmt.Errorf("message %s not found in pending", messageID)
 	}
 	delete(b.pending, messageID)
+
+	// Persist ACK to storage if configured.
+	if b.store != nil {
+		if err := b.store.Ack(messageID); err != nil {
+			// Log error but don't fail ACK? Or fail?
+			// For consistency, we should probably log it.
+			fmt.Printf("[broker] storage ack error: %v\n", err)
+		}
+	}
+
 	return nil
 }
 

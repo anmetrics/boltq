@@ -14,6 +14,17 @@ import (
 )
 
 const (
+	RecordPublish byte = 0x01
+	RecordAck     byte = 0x02
+)
+
+type WALRecord struct {
+	Type    byte
+	Message *protocol.Message
+	MsgID   string
+}
+
+const (
 	walFileName = "queue.wal"
 	headerSize  = 8 // 4 bytes length + 4 bytes CRC32
 )
@@ -52,18 +63,34 @@ func (w *WAL) Write(msg *protocol.Message) error {
 	if err != nil {
 		return fmt.Errorf("encode message: %w", err)
 	}
+	return w.writeRecord(RecordPublish, data)
+}
 
+// WriteAck appends an acknowledgment to the WAL.
+func (w *WAL) WriteAck(msgID string) error {
+	return w.writeRecord(RecordAck, []byte(msgID))
+}
+
+func (w *WAL) writeRecord(typ byte, data []byte) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
 	// Write length (4 bytes, little-endian).
+	// Length is type (1) + data length
 	var header [headerSize]byte
-	binary.LittleEndian.PutUint32(header[:4], uint32(len(data)))
-	// Write CRC32 checksum.
-	binary.LittleEndian.PutUint32(header[4:8], crc32.ChecksumIEEE(data))
+	binary.LittleEndian.PutUint32(header[:4], uint32(1+len(data)))
+
+	// Checksum over type + data
+	h := crc32.NewIEEE()
+	h.Write([]byte{typ})
+	h.Write(data)
+	binary.LittleEndian.PutUint32(header[4:8], h.Sum32())
 
 	if _, err := w.writer.Write(header[:]); err != nil {
 		return fmt.Errorf("write header: %w", err)
+	}
+	if _, err := w.writer.Write([]byte{typ}); err != nil {
+		return fmt.Errorf("write type: %w", err)
 	}
 	if _, err := w.writer.Write(data); err != nil {
 		return fmt.Errorf("write data: %w", err)
@@ -72,8 +99,8 @@ func (w *WAL) Write(msg *protocol.Message) error {
 	return w.writer.Flush()
 }
 
-// ReadAll reads all messages from the WAL file (for recovery).
-func (w *WAL) ReadAll() ([]*protocol.Message, error) {
+// ReadAllRecords reads all records from the WAL file (for recovery).
+func (w *WAL) ReadAllRecords() ([]*WALRecord, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
@@ -93,7 +120,7 @@ func (w *WAL) ReadAll() ([]*protocol.Message, error) {
 	defer f.Close()
 
 	reader := bufio.NewReaderSize(f, 64*1024)
-	var messages []*protocol.Message
+	var records []*WALRecord
 
 	for {
 		var header [headerSize]byte
@@ -104,30 +131,59 @@ func (w *WAL) ReadAll() ([]*protocol.Message, error) {
 			return nil, fmt.Errorf("read header: %w", err)
 		}
 
-		length := binary.LittleEndian.Uint32(header[:4])
+		totalLen := binary.LittleEndian.Uint32(header[:4])
 		checksum := binary.LittleEndian.Uint32(header[4:8])
 
-		data := make([]byte, length)
+		if totalLen < 1 {
+			break // invalid
+		}
+
+		typ, err := reader.ReadByte()
+		if err != nil {
+			break
+		}
+
+		dataLen := totalLen - 1
+		data := make([]byte, dataLen)
 		if _, err := io.ReadFull(reader, data); err != nil {
-			if err == io.EOF || err == io.ErrUnexpectedEOF {
-				break // truncated entry, stop
-			}
-			return nil, fmt.Errorf("read data: %w", err)
+			break
 		}
 
 		// Verify checksum.
-		if crc32.ChecksumIEEE(data) != checksum {
-			break // corrupted entry, stop recovery here
+		h := crc32.NewIEEE()
+		h.Write([]byte{typ})
+		h.Write(data)
+		if h.Sum32() != checksum {
+			break // corrupted
 		}
 
-		msg, err := protocol.DecodeMessage(data)
-		if err != nil {
-			continue // skip malformed entries
+		switch typ {
+		case RecordPublish:
+			msg, err := protocol.DecodeMessage(data)
+			if err == nil {
+				records = append(records, &WALRecord{Type: typ, Message: msg})
+			}
+		case RecordAck:
+			records = append(records, &WALRecord{Type: typ, MsgID: string(data)})
 		}
-		messages = append(messages, msg)
 	}
 
-	return messages, nil
+	return records, nil
+}
+
+// ReadAll is deprecated, use ReadAllRecords.
+func (w *WAL) ReadAll() ([]*protocol.Message, error) {
+	records, err := w.ReadAllRecords()
+	if err != nil {
+		return nil, err
+	}
+	var msgs []*protocol.Message
+	for _, r := range records {
+		if r.Type == RecordPublish {
+			msgs = append(msgs, r.Message)
+		}
+	}
+	return msgs, nil
 }
 
 // Sync forces a flush to disk.
