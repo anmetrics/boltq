@@ -34,6 +34,14 @@ type Message struct {
 	Timestamp     int64             `json:"timestamp"`
 	Retry         int               `json:"retry"`
 	DeliveryCount int               `json:"delivery_count"`
+	Delay         int64             `json:"delay,omitempty"`
+	TTL           int64             `json:"ttl,omitempty"`
+}
+
+// PublishOptions configures a single publish operation.
+type PublishOptions struct {
+	Delay time.Duration
+	TTL   time.Duration
 }
 
 // NotLeaderError is returned when the connected node is not the cluster leader.
@@ -44,6 +52,15 @@ type NotLeaderError struct {
 
 func (e *NotLeaderError) Error() string {
 	return fmt.Sprintf("not leader, current leader is %s (%s)", e.LeaderID, e.Leader)
+}
+
+// ServerError is returned when the server returns an error response.
+type ServerError struct {
+	Message string `json:"error"`
+}
+
+func (e *ServerError) Error() string {
+	return fmt.Sprintf("server error: %s", e.Message)
 }
 
 // ClusterStatus represents the cluster status response.
@@ -126,8 +143,10 @@ func (c *Client) Close() error {
 	return nil
 }
 
-// Publish sends a message to a work queue.
-func (c *Client) Publish(topic string, payload interface{}, headers map[string]string) (string, error) {
+func (c *Client) Publish(topic string, payload interface{}, headers map[string]string, opts *PublishOptions) (string, error) {
+	if opts == nil {
+		opts = &PublishOptions{}
+	}
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return "", fmt.Errorf("marshal payload: %w", err)
@@ -137,9 +156,11 @@ func (c *Client) Publish(topic string, payload interface{}, headers map[string]s
 		"topic":   topic,
 		"payload": json.RawMessage(data),
 		"headers": headers,
+		"delay":   int64(opts.Delay),
+		"ttl":     int64(opts.TTL),
 	})
 
-	resp, err := c.command(protocol.CmdPublish, body)
+	idBytes, err := c.command(protocol.CmdPublish, body)
 	if err != nil {
 		return "", err
 	}
@@ -147,12 +168,15 @@ func (c *Client) Publish(topic string, payload interface{}, headers map[string]s
 	var result struct {
 		ID string `json:"id"`
 	}
-	json.Unmarshal(resp, &result)
+	json.Unmarshal(idBytes, &result)
 	return result.ID, nil
 }
 
 // PublishTopic sends a message to a pub/sub topic.
-func (c *Client) PublishTopic(topic string, payload interface{}, headers map[string]string) (string, error) {
+func (c *Client) PublishTopic(topic string, payload interface{}, headers map[string]string, opts *PublishOptions) (string, error) {
+	if opts == nil {
+		opts = &PublishOptions{}
+	}
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return "", fmt.Errorf("marshal payload: %w", err)
@@ -192,7 +216,9 @@ func (c *Client) Consume(topic string) (*Message, error) {
 		return nil, parseNotLeaderError(frame.Payload)
 	}
 	if frame.Command == protocol.StatusError {
-		return nil, fmt.Errorf("consume: %s", string(frame.Payload))
+		var errResp ServerError
+		json.Unmarshal(frame.Payload, &errResp)
+		return nil, &errResp
 	}
 
 	var msg Message
@@ -200,6 +226,44 @@ func (c *Client) Consume(topic string) (*Message, error) {
 		return nil, fmt.Errorf("decode message: %w", err)
 	}
 	return &msg, nil
+}
+
+// Subscribe opens a pub/sub subscription. If durable is true, missed messages are replayed on reconnect.
+func (c *Client) Subscribe(topic string, subscriberID string, durable bool) (<-chan *Message, error) {
+	body, _ := json.Marshal(map[string]interface{}{
+		"topic":   topic,
+		"id":      subscriberID,
+		"durable": durable,
+	})
+
+	frame, err := c.sendCommand(protocol.CmdConsume, body) // Uses consume command for pubsub too in TCP protocol
+	if err != nil {
+		return nil, err
+	}
+
+	if frame.Command != protocol.StatusOK {
+		var errResp ServerError
+		json.Unmarshal(frame.Payload, &errResp)
+		return nil, &errResp
+	}
+
+	ch := make(chan *Message, 100)
+	go func() {
+		defer close(ch)
+		for {
+			var frame protocol.Frame
+			frame, err = protocol.ReadFrame(c.reader)
+			if err != nil {
+				return
+			}
+			var msg Message
+			if err := json.Unmarshal(frame.Payload, &msg); err == nil {
+				ch <- &msg
+			}
+		}
+	}()
+
+	return ch, nil
 }
 
 // Ack acknowledges a message.
@@ -249,6 +313,13 @@ func (c *Client) ClusterStatusInfo() (*ClusterStatus, error) {
 	return &status, nil
 }
 
+// SetPrefetch sets the prefetch limit for this client connection.
+func (c *Client) SetPrefetch(count int) error {
+	body, _ := json.Marshal(map[string]int{"count": count})
+	_, err := c.command(protocol.CmdPrefetch, body)
+	return err
+}
+
 // Health checks if the server is healthy.
 func (c *Client) Health() error {
 	return c.Ping()
@@ -264,11 +335,9 @@ func (c *Client) command(cmd byte, payload []byte) ([]byte, error) {
 		return nil, parseNotLeaderError(frame.Payload)
 	}
 	if frame.Command == protocol.StatusError {
-		var errResp struct {
-			Error string `json:"error"`
-		}
+		var errResp ServerError
 		json.Unmarshal(frame.Payload, &errResp)
-		return nil, fmt.Errorf("server: %s", errResp.Error)
+		return nil, &errResp
 	}
 	return frame.Payload, nil
 }

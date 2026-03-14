@@ -110,8 +110,8 @@ func TestPubSub(t *testing.T) {
 	b := newTestBroker()
 	defer b.Close()
 
-	ch1 := b.Subscribe("events", "sub1", 10)
-	ch2 := b.Subscribe("events", "sub2", 10)
+	ch1 := b.Subscribe("events", "sub1", 10, false)
+	ch2 := b.Subscribe("events", "sub2", 10, false)
 
 	msg := protocol.NewMessage("events", []byte(`"event_data"`), nil)
 	b.PublishTopic("events", msg)
@@ -141,7 +141,7 @@ func TestStats(t *testing.T) {
 
 	b.Publish("q1", protocol.NewMessage("q1", []byte(`"a"`), nil))
 	b.Publish("q1", protocol.NewMessage("q1", []byte(`"b"`), nil))
-	b.Subscribe("t1", "s1", 10)
+	b.Subscribe("t1", "s1", 10, false)
 
 	stats := b.Stats()
 	if stats.Queues["q1"] != 2 {

@@ -52,6 +52,7 @@ func (s *Scheduler) ackTimeoutWatcher() {
 		case <-s.stopCh:
 			return
 		case <-ticker.C:
+			s.broker.ProcessAdvancedFeatures()
 			s.checkTimeouts()
 		}
 	}

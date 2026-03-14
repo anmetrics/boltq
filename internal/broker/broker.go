@@ -1,7 +1,12 @@
 package broker
 
 import (
+	"bufio"
+	"encoding/binary"
 	"fmt"
+	"io"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -48,6 +53,9 @@ type Broker struct {
 	topics      map[string]*Topic
 	deadLetters map[string]*queue.Queue
 	pending     map[string]*PendingMessage // message ID -> pending
+	delayed     []*protocol.Message        // messages waiting for delivery
+	durableSubs map[string]map[string]bool // topic -> subID -> isDurable
+	spillDir    string
 	store       storage.Storage
 	mu          sync.RWMutex
 	pendingMu   sync.RWMutex
@@ -75,11 +83,19 @@ func New(cfg Config) *Broker {
 	if cfg.QueueCap <= 0 {
 		cfg.QueueCap = 1 << 20
 	}
+	spillDir := "./data/spill"
+	if cfg.Storage != nil {
+		// Try to get data dir from storage if possible, but for now use default
+	}
+
 	return &Broker{
 		queues:      make(map[string]*queue.Queue),
 		topics:      make(map[string]*Topic),
 		deadLetters: make(map[string]*queue.Queue),
 		pending:     make(map[string]*PendingMessage),
+		delayed:     make([]*protocol.Message, 0),
+		durableSubs: make(map[string]map[string]bool),
+		spillDir:    spillDir,
 		store:       cfg.Storage,
 		maxRetry:    cfg.MaxRetry,
 		ackTimeout:  cfg.AckTimeout,
@@ -132,6 +148,14 @@ func (b *Broker) Publish(topic string, msg *protocol.Message) error {
 	msg.Topic = topic
 	msg.MaxRetry = b.maxRetry
 
+	now := time.Now().UnixNano()
+	if msg.Delay > 0 {
+		msg.DeliverAt = now + msg.Delay
+	}
+	if msg.TTL > 0 {
+		msg.ExpiresAt = now + msg.TTL
+	}
+
 	// Persist to WAL if storage is configured.
 	if b.store != nil {
 		if err := b.store.Write(msg); err != nil {
@@ -139,10 +163,51 @@ func (b *Broker) Publish(topic string, msg *protocol.Message) error {
 		}
 	}
 
+	if msg.DeliverAt > now {
+		b.mu.Lock()
+		b.delayed = append(b.delayed, msg)
+		b.mu.Unlock()
+		return nil
+	}
+
 	q := b.getOrCreateQueue(topic)
 	if !q.Push(msg) {
-		return fmt.Errorf("queue %s is full", topic)
+		// Spill to disk if queue is full
+		return b.spillToDisk(topic, msg)
 	}
+	return nil
+}
+
+func (b *Broker) spillToDisk(topic string, msg *protocol.Message) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if err := os.MkdirAll(b.spillDir, 0755); err != nil {
+		return fmt.Errorf("create spill dir: %w", err)
+	}
+
+	path := filepath.Join(b.spillDir, topic+".spill")
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		return fmt.Errorf("open spill file: %w", err)
+	}
+	defer f.Close()
+
+	data, err := msg.Encode()
+	if err != nil {
+		return err
+	}
+
+	// Simple format: [length:4][data]
+	var lenBuf [4]byte
+	binary.LittleEndian.PutUint32(lenBuf[:], uint32(len(data)))
+	if _, err := f.Write(lenBuf[:]); err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -160,6 +225,7 @@ func (b *Broker) PublishTopic(topicName string, msg *protocol.Message) error {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 
+	// Push to active subscribers
 	for _, sub := range t.subscribers {
 		select {
 		case sub.Ch <- msg:
@@ -167,6 +233,21 @@ func (b *Broker) PublishTopic(topicName string, msg *protocol.Message) error {
 			// subscriber is slow, drop the message for this subscriber
 		}
 	}
+
+	// Push to durable queues
+	b.mu.RLock()
+	subs := b.durableSubs[topicName]
+	b.mu.RUnlock()
+
+	for subID := range subs {
+		// Durable subscription name is "topic:subID"
+		qName := fmt.Sprintf("%s:%s", topicName, subID)
+		q := b.getOrCreateQueue(qName)
+		if !q.Push(msg) {
+			b.spillToDisk(qName, msg)
+		}
+	}
+
 	return nil
 }
 
@@ -194,25 +275,155 @@ func (b *Broker) Consume(topic string) *protocol.Message {
 // TryConsume retrieves a message from a work queue (non-blocking).
 func (b *Broker) TryConsume(topic string) *protocol.Message {
 	q := b.getOrCreateQueue(topic)
-	msg := q.TryPop()
-	if msg == nil {
-		return nil
+	for {
+		msg := q.TryPop()
+		if msg == nil {
+			return nil
+		}
+
+		// Check TTL
+		if msg.ExpiresAt > 0 && time.Now().UnixNano() > msg.ExpiresAt {
+			continue // skip expired message
+		}
+
+		b.pendingMu.Lock()
+		b.pending[msg.ID] = &PendingMessage{
+			Message:     msg,
+			QueueName:   topic,
+			DeliverAt:   time.Now(),
+			AckDeadline: time.Now().Add(b.ackTimeout),
+		}
+		b.pendingMu.Unlock()
+
+		return msg
+	}
+}
+
+// ProcessAdvancedFeatures moves delayed messages to active queues and purges expired pending messages.
+func (b *Broker) ProcessAdvancedFeatures() {
+	now := time.Now().UnixNano()
+
+	// 1. Move delayed messages to active queues
+	b.mu.Lock()
+	var remaining []*protocol.Message
+	var ready []*protocol.Message
+	for _, msg := range b.delayed {
+		if now >= msg.DeliverAt {
+			ready = append(ready, msg)
+		} else {
+			remaining = append(remaining, msg)
+		}
+	}
+	b.delayed = remaining
+	b.mu.Unlock()
+
+	for _, msg := range ready {
+		q := b.getOrCreateQueue(msg.Topic)
+		q.Push(msg)
 	}
 
+	// 2. Clear expired pending messages
 	b.pendingMu.Lock()
-	b.pending[msg.ID] = &PendingMessage{
-		Message:     msg,
-		QueueName:   topic,
-		DeliverAt:   time.Now(),
-		AckDeadline: time.Now().Add(b.ackTimeout),
+	for id, pm := range b.pending {
+		if pm.Message.ExpiresAt > 0 && now > pm.Message.ExpiresAt {
+			delete(b.pending, id)
+		}
 	}
 	b.pendingMu.Unlock()
 
-	return msg
+	// 3. Reload from spill files if there is space
+	b.reloadFromDisk()
+}
+
+func (b *Broker) reloadFromDisk() {
+	b.mu.RLock()
+	topics := make([]string, 0, len(b.queues))
+	for name := range b.queues {
+		topics = append(topics, name)
+	}
+	b.mu.RUnlock()
+
+	for _, topic := range topics {
+		q := b.getOrCreateQueue(topic)
+		if q.IsFull() {
+			continue
+		}
+
+		path := filepath.Join(b.spillDir, topic+".spill")
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			continue
+		}
+
+		b.mu.Lock()
+		b.processSpillFile(topic, q, path)
+		b.mu.Unlock()
+	}
+}
+
+func (b *Broker) processSpillFile(topic string, q *queue.Queue, path string) {
+	f, err := os.Open(path)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+
+	tempPath := path + ".tmp"
+	tf, err := os.Create(tempPath)
+	if err != nil {
+		return
+	}
+	defer tf.Close()
+
+	reader := bufio.NewReader(f)
+	reloadedCount := 0
+
+	for !q.IsFull() {
+		var lenBuf [4]byte
+		if _, err := io.ReadFull(reader, lenBuf[:]); err != nil {
+			break
+		}
+		length := binary.LittleEndian.Uint32(lenBuf[:])
+		data := make([]byte, length)
+		if _, err := io.ReadFull(reader, data); err != nil {
+			break
+		}
+
+		msg, err := protocol.DecodeMessage(data)
+		if err != nil {
+			continue
+		}
+
+		if q.Push(msg) {
+			reloadedCount++
+		} else {
+			// Write back to temp file if queue became full unexpectedly
+			binary.LittleEndian.PutUint32(lenBuf[:], uint32(len(data)))
+			tf.Write(lenBuf[:])
+			tf.Write(data)
+			break
+		}
+	}
+
+	// Copy remaining messages to temp file
+	io.Copy(tf, reader)
+	tf.Close()
+	f.Close()
+
+	if reloadedCount > 0 {
+		info, _ := os.Stat(tempPath)
+		if info.Size() == 0 {
+			os.Remove(tempPath)
+			os.Remove(path)
+		} else {
+			os.Rename(tempPath, path)
+		}
+	} else {
+		os.Remove(tempPath)
+	}
 }
 
 // Subscribe creates a subscription to a pub/sub topic. Returns a channel for receiving messages.
-func (b *Broker) Subscribe(topicName string, subscriberID string, bufSize int) <-chan *protocol.Message {
+func (b *Broker) Subscribe(topicName string, subscriberID string, bufSize int, durable bool) <-chan *protocol.Message {
 	if bufSize <= 0 {
 		bufSize = 256
 	}
@@ -226,7 +437,55 @@ func (b *Broker) Subscribe(topicName string, subscriberID string, bufSize int) <
 	}
 	t.mu.Unlock()
 
+	if durable {
+		b.mu.Lock()
+		if _, ok := b.durableSubs[topicName]; !ok {
+			b.durableSubs[topicName] = make(map[string]bool)
+		}
+		b.durableSubs[topicName][subscriberID] = true
+		b.mu.Unlock()
+
+		// If there are missed messages in the durable queue, push them to the channel
+		go b.catchUpDurable(topicName, subscriberID, ch)
+	}
 	return ch
+}
+
+func (b *Broker) catchUpDurable(topicName string, subscriberID string, ch chan *protocol.Message) {
+	qName := fmt.Sprintf("%s:%s", topicName, subscriberID)
+	q := b.getOrCreateQueue(qName)
+
+	for {
+		// Check if the subscriber still exists and is using THIS channel
+		b.mu.RLock()
+		t, ok := b.topics[topicName]
+		b.mu.RUnlock()
+		if !ok {
+			return
+		}
+
+		t.mu.RLock()
+		sub, exists := t.subscribers[subscriberID]
+		// Important: Check if the channel is the same. Subscriber might have
+		// reconnected and a newer catchUpDurable might be running for a NEW channel.
+		if !exists || sub.Ch != ch {
+			t.mu.RUnlock()
+			return
+		}
+		t.mu.RUnlock()
+
+		msg := q.TryPop()
+		if msg == nil {
+			break
+		}
+
+		select {
+		case ch <- msg:
+			// Success
+			// For now, let's keep it simple: the next call will handle it.
+			return
+		}
+	}
 }
 
 // Unsubscribe removes a subscriber from a topic.

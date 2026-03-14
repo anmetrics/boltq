@@ -112,7 +112,7 @@ func cmdPublish(client *boltq.Client, args []string) {
 		os.Exit(1)
 	}
 
-	id, err := client.Publish(*topic, json.RawMessage(*payload), nil)
+	id, err := client.Publish(*topic, json.RawMessage(*payload), nil, nil)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "publish error: %v\n", err)
 		os.Exit(1)

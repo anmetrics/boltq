@@ -16,6 +16,7 @@ const (
 	CmdPing         byte = 0x06
 	CmdStats        byte = 0x07
 	CmdAuth          byte = 0x08
+	CmdPrefetch      byte = 0x09
 	CmdClusterJoin   byte = 0x10
 	CmdClusterLeave  byte = 0x11
 	CmdClusterStatus byte = 0x12

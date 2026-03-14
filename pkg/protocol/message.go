@@ -17,6 +17,10 @@ type Message struct {
 	Retry         int               `json:"retry"`
 	MaxRetry      int               `json:"max_retry"`
 	DeliveryCount int               `json:"delivery_count"`
+	Delay         int64             `json:"delay,omitempty"`      // delay in nanoseconds
+	TTL           int64             `json:"ttl,omitempty"`        // time to live in nanoseconds
+	DeliverAt     int64             `json:"deliver_at,omitempty"` // UnixNano
+	ExpiresAt     int64             `json:"expires_at,omitempty"` // UnixNano
 }
 
 // NewMessage creates a new message with a generated ID and current timestamp.

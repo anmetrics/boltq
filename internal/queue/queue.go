@@ -102,6 +102,16 @@ func (q *Queue) Name() string {
 	return q.name
 }
 
+// Capacity returns the total capacity of the queue.
+func (q *Queue) Capacity() int64 {
+	return int64(len(q.buf))
+}
+
+// IsFull returns true if the queue is at capacity.
+func (q *Queue) IsFull() bool {
+	return atomic.LoadInt64(&q.size) >= int64(len(q.buf))
+}
+
 // Close signals all waiting consumers to stop.
 func (q *Queue) Close() {
 	atomic.StoreInt32(&q.closed, 1)

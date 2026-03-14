@@ -86,8 +86,8 @@ func (cb *ClusterBroker) TryConsume(topic string) *protocol.Message {
 }
 
 // Subscribe creates a local pub/sub subscription. Pub/sub is leader-local.
-func (cb *ClusterBroker) Subscribe(topicName string, subscriberID string, bufSize int) <-chan *protocol.Message {
-	return cb.localBroker.Subscribe(topicName, subscriberID, bufSize)
+func (cb *ClusterBroker) Subscribe(topicName string, subscriberID string, bufSize int, durable bool) <-chan *protocol.Message {
+	return cb.localBroker.Subscribe(topicName, subscriberID, bufSize, durable)
 }
 
 // Unsubscribe removes a local pub/sub subscription.
@@ -159,6 +159,11 @@ func (cb *ClusterBroker) PurgeDeadLetters(topic string) (int64, error) {
 // Stats returns broker stats augmented with cluster info.
 func (cb *ClusterBroker) Stats() broker.Stats {
 	return cb.localBroker.Stats()
+}
+
+// ProcessAdvancedFeatures processes delayed and expired messages in the local broker.
+func (cb *ClusterBroker) ProcessAdvancedFeatures() {
+	cb.localBroker.ProcessAdvancedFeatures()
 }
 
 // Close shuts down the cluster broker.

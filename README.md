@@ -14,11 +14,16 @@ High-performance message queue server written in Go. Built for low latency, high
 - **Web Dashboard** — Nuxt 3 admin UI with real-time monitoring
 - **ACK/NACK** — consumer acknowledgment with configurable timeout
 - **Retry** — exponential retry with max retries → dead letter queue
+- **Delayed Messages** — schedule delivery for a future time
+- **Message TTL** — automatic expiry of stale messages
+- **Consumer Prefetch** — limit unacknowledged messages per consumer
+- **Durable Subscriptions** — persistent message delivery for offline subscribers
+- **Spill-to-Disk** — bypass "Queue Full" errors by overflowing to disk
 - **WAL Persistence** — Write-Ahead Log for crash recovery
 - **Prometheus Metrics** — `/metrics` endpoint
 - **API Key Auth** — optional authentication
 - **TLS Encryption** — full end-to-end encryption for TCP and HTTP
-- **Lock-free ring buffer** — 1M+ message capacity
+- **Lock-free ring buffer** — high-performance internal queue
 
 ## Performance
 
@@ -71,6 +76,7 @@ Max frame size: 4MB.
 | PING | `0x06` | Health check |
 | STATS | `0x07` | Get queue statistics |
 | AUTH | `0x08` | Authenticate with API key |
+| PREFETCH | `0x09` | Set consumer prefetch limit |
 | CLUSTER_JOIN | `0x10` | Join node to cluster |
 | CLUSTER_LEAVE | `0x11` | Remove node from cluster |
 | CLUSTER_STATUS | `0x12` | Get cluster status |

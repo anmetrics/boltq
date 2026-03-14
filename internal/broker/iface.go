@@ -9,7 +9,7 @@ type BrokerIface interface {
 	PublishTopic(topicName string, msg *protocol.Message) error
 	Consume(topic string) *protocol.Message
 	TryConsume(topic string) *protocol.Message
-	Subscribe(topicName string, subscriberID string, bufSize int) <-chan *protocol.Message
+	Subscribe(topicName string, subscriberID string, bufSize int, durable bool) <-chan *protocol.Message
 	Unsubscribe(topicName string, subscriberID string)
 	Ack(messageID string) error
 	Nack(messageID string) error
@@ -18,5 +18,6 @@ type BrokerIface interface {
 	PurgeQueue(topic string) (int64, error)
 	PurgeDeadLetters(topic string) (int64, error)
 	Stats() Stats
+	ProcessAdvancedFeatures()
 	Close()
 }
