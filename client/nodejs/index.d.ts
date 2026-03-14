@@ -34,7 +34,10 @@ export interface Consumer {
 export declare class BoltQError extends Error {
   name: 'BoltQError';
   code: string;
-  constructor(message: string, code?: string);
+  leader: string | null;
+  leaderId: string | null;
+  details: any;
+  constructor(message: string, code?: string, details?: any);
 }
 
 export declare class BoltQClient extends EventEmitter {
@@ -50,21 +53,13 @@ export declare class BoltQClient extends EventEmitter {
   disconnect(): void;
 
   /** Publish a message to a queue topic. */
-  publish(
-    topic: string,
-    payload: unknown,
-    headers?: Record<string, string>,
-  ): Promise<PublishResult>;
+  publish(topic: string, payload: any, headers?: Record<string, string>, options?: { delay?: number; ttl?: number }): Promise<{ id: string; topic: string }>;
 
   /** Publish a message to a pub/sub topic. */
-  publishTopic(
-    topic: string,
-    payload: unknown,
-    headers?: Record<string, string>,
-  ): Promise<PublishResult>;
+  publishTopic(topic: string, payload: any, headers?: Record<string, string>, options?: { delay?: number; ttl?: number }): Promise<{ id: string; topic: string }>;
 
   /** Consume a single message from a queue topic. Returns null if empty. */
-  consume(topic: string): Promise<Message | null>;
+  consume(topic: string): Promise<any | null>;
 
   /** Acknowledge a consumed message. */
   ack(messageId: string): Promise<void>;
@@ -76,7 +71,13 @@ export declare class BoltQClient extends EventEmitter {
   ping(): Promise<void>;
 
   /** Get broker statistics. */
-  stats(): Promise<Record<string, unknown>>;
+  stats(): Promise<any>;
+
+  /** Set prefetch count for consumers. */
+  setPrefetch(count: number): Promise<void>;
+
+  /** Subscribe to a pub/sub topic. */
+  subscribe(topic: string, subscriberId: string, options?: { durable?: boolean }, onMessage?: (msg: any) => void): Promise<void>;
 
   /** Health check. Returns true if ping succeeds. */
   health(): Promise<boolean>;

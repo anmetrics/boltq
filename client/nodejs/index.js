@@ -16,20 +16,28 @@ const CMD_NACK          = 0x05;
 const CMD_PING          = 0x06;
 const CMD_STATS         = 0x07;
 const CMD_AUTH          = 0x08;
+const CMD_PREFETCH      = 0x09;
+const CMD_CLUSTER_JOIN   = 0x10;
+const CMD_CLUSTER_LEAVE  = 0x11;
+const CMD_CLUSTER_STATUS = 0x12;
 
 // Response status bytes
-const STATUS_OK    = 0x00;
-const STATUS_ERROR = 0x01;
-const STATUS_EMPTY = 0x02;
+const STATUS_OK         = 0x00;
+const STATUS_ERROR      = 0x01;
+const STATUS_EMPTY      = 0x02;
+const STATUS_NOT_LEADER = 0x03;
 
 // Frame header: 1 byte command + 4 bytes LE length = 5 bytes
 const HEADER_SIZE = 5;
 
 export class BoltQError extends Error {
-  constructor(message, code) {
+  constructor(message, code, details = {}) {
     super(message);
     this.name = 'BoltQError';
     this.code = code || 'BOLTQ_ERROR';
+    this.leader = details.leader || null;
+    this.leaderId = details.leader_id || null;
+    this.details = details;
   }
 }
 
@@ -130,13 +138,18 @@ export class BoltQClient extends EventEmitter {
    * @param {string} topic
    * @param {any} payload
    * @param {Record<string, string>} [headers]
+   * @param {object} [options]
+   * @param {number} [options.delay] - Delay in milliseconds
+   * @param {number} [options.ttl] - TTL in milliseconds
    * @returns {Promise<{id: string, topic: string}>}
    */
-  async publish(topic, payload, headers) {
+  async publish(topic, payload, headers, options = {}) {
     return this._command(CMD_PUBLISH, {
       topic,
       payload: typeof payload === 'string' ? payload : JSON.stringify(payload),
       headers: headers || {},
+      delay: options.delay || 0,
+      ttl: options.ttl || 0,
     });
   }
 
@@ -145,13 +158,18 @@ export class BoltQClient extends EventEmitter {
    * @param {string} topic
    * @param {any} payload
    * @param {Record<string, string>} [headers]
+   * @param {object} [options]
+   * @param {number} [options.delay] - Delay in milliseconds
+   * @param {number} [options.ttl] - TTL in milliseconds
    * @returns {Promise<{id: string, topic: string}>}
    */
-  async publishTopic(topic, payload, headers) {
+  async publishTopic(topic, payload, headers, options = {}) {
     return this._command(CMD_PUBLISH_TOPIC, {
       topic,
       payload: typeof payload === 'string' ? payload : JSON.stringify(payload),
       headers: headers || {},
+      delay: options.delay || 0,
+      ttl: options.ttl || 0,
     });
   }
 
@@ -165,10 +183,16 @@ export class BoltQClient extends EventEmitter {
     const res = await this._sendCommand(CMD_CONSUME, { topic });
     if (res.status === STATUS_EMPTY) return null;
     if (res.status === STATUS_ERROR) {
-      const payload = res.payload.length > 0 ? JSON.parse(res.payload) : {};
-      throw new BoltQError(payload.error || 'Consume failed', 'CONSUME_ERROR');
+      let message = 'Consume failed';
+      let code = 'SERVER_ERROR';
+      try {
+        const payload = JSON.parse(res.payload.toString());
+        message = payload.error || message;
+        code = payload.code || code;
+      } catch { /* ignore */ }
+      throw new BoltQError(message, code);
     }
-    return JSON.parse(res.payload);
+    return JSON.parse(res.payload.toString());
   }
 
   /**
@@ -203,6 +227,41 @@ export class BoltQClient extends EventEmitter {
    */
   async stats() {
     return this._command(CMD_STATS, {});
+  }
+
+  /**
+   * Set prefetch limit for this client.
+   * @param {number} count
+   * @returns {Promise<void>}
+   */
+  async setPrefetch(count) {
+    await this._command(CMD_PREFETCH, { count });
+  }
+
+  /**
+   * Subscribe to a pub/sub topic.
+   * @param {string} topic
+   * @param {string} subscriberId
+   * @param {object} [options]
+   * @param {boolean} [options.durable]
+   * @param {(msg: any) => void} [onMessage] - Callback for incoming messages
+   * @returns {Promise<void>}
+   */
+  async subscribe(topic, subscriberId, options = {}, onMessage = null) {
+    const res = await this._sendCommand(CMD_CONSUME, {
+      topic,
+      id: subscriberId,
+      durable: !!options.durable
+    });
+
+    if (res.status !== STATUS_OK) {
+      const payload = res.payload.length > 0 ? JSON.parse(res.payload) : {};
+      throw new BoltQError(payload.error || 'Subscribe failed', 'SUBSCRIBE_ERROR');
+    }
+
+    if (onMessage) {
+      this.on(`message:${topic}:${subscriberId}`, onMessage);
+    }
   }
 
   /**
@@ -264,12 +323,20 @@ export class BoltQClient extends EventEmitter {
    */
   async _command(cmd, data) {
     const res = await this._sendCommand(cmd, data);
-    if (res.status === STATUS_ERROR) {
-      const payload = res.payload.length > 0 ? JSON.parse(res.payload) : {};
-      throw new BoltQError(payload.error || 'Server error', 'SERVER_ERROR');
+    if (res.status !== STATUS_OK) {
+      if (res.status === STATUS_EMPTY) return null;
+
+      let message = 'Server error';
+      let code = res.status === STATUS_NOT_LEADER ? 'NOT_LEADER' : 'SERVER_ERROR';
+      let details = {};
+      try {
+        details = JSON.parse(res.payload.toString());
+        message = details.error || message;
+      } catch { /* ignore */ }
+      throw new BoltQError(message, code, details);
     }
     if (res.payload.length === 0) return null;
-    return JSON.parse(res.payload);
+    return JSON.parse(res.payload.toString());
   }
 
   /**
@@ -294,7 +361,7 @@ export class BoltQClient extends EventEmitter {
         reject(new BoltQError('Request timed out', 'TIMEOUT'));
       }, this.timeout);
 
-      this._pending.push({ resolve, reject, timer });
+      this._pending.push({ resolve, reject, cmd, timer });
       this._socket.write(frame);
     });
   }
@@ -317,14 +384,36 @@ export class BoltQClient extends EventEmitter {
       if (this._buffer.length < totalSize) break;
 
       const status = this._buffer[0];
-      const payload = this._buffer.subarray(HEADER_SIZE, totalSize);
+      const payloadRaw = this._buffer.subarray(HEADER_SIZE, totalSize);
       this._buffer = this._buffer.subarray(totalSize);
 
-      const pending = this._pending.shift();
-      if (pending) {
-        clearTimeout(pending.timer);
-        pending.resolve({ status, payload });
+      // Check if this is a streamed message (STATUS_OK with subscriber_id)
+      if (status === STATUS_OK) {
+        try {
+          const payloadStr = payloadRaw.toString();
+          if (payloadStr.includes('"subscriber_id"')) {
+            const msg = JSON.parse(payloadStr);
+            if (msg.topic && msg.subscriber_id) {
+              this.emit('message', msg);
+              this.emit(`message:${msg.topic}`, msg);
+              this.emit(`message:${msg.topic}:${msg.subscriber_id}`, msg);
+              continue;
+            }
+          }
+        } catch { /* ignore parsing errors for streaming check */ }
       }
+
+      // Handle responses to pending requests
+      if (this._pending.length > 0) {
+        const pending = this._pending[0];
+        clearTimeout(pending.timer);
+        this._pending.shift();
+        pending.resolve({ status, payload: payloadRaw });
+        continue;
+      }
+
+      // If no pending request and not a streamed message, log it
+      console.warn('[boltq] received unexpected frame:', status, payloadRaw.toString());
     }
   }
 

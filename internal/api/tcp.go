@@ -103,6 +103,7 @@ func (s *TCPServer) handleConn(conn net.Conn) {
 	prefetch := 0                  // 0 means no limit
 	unackedCount := 0
 
+	var writeMu sync.Mutex
 	for {
 		select {
 		case <-s.quit:
@@ -120,25 +121,31 @@ func (s *TCPServer) handleConn(conn net.Conn) {
 
 		// AUTH must be the first command if apiKey is configured.
 		if !authenticated && frame.Command != protocol.CmdAuth {
+			writeMu.Lock()
 			s.writeError(writer, "authentication required, send AUTH first")
 			writer.Flush()
+			writeMu.Unlock()
 			return
 		}
 
-		resp := s.dispatch(frame, &authenticated, &prefetch, &unackedCount, writer)
+		resp := s.dispatch(frame, &authenticated, &prefetch, &unackedCount, writer, &writeMu)
 
+		writeMu.Lock()
 		if err := protocol.WriteFrame(writer, resp); err != nil {
 			log.Printf("[tcp] write error: %v", err)
+			writeMu.Unlock()
 			return
 		}
 		if err := writer.Flush(); err != nil {
 			log.Printf("[tcp] flush error: %v", err)
+			writeMu.Unlock()
 			return
 		}
+		writeMu.Unlock()
 	}
 }
 
-func (s *TCPServer) dispatch(frame protocol.Frame, authenticated *bool, prefetch *int, unackedCount *int, writer *bufio.Writer) protocol.Frame {
+func (s *TCPServer) dispatch(frame protocol.Frame, authenticated *bool, prefetch *int, unackedCount *int, writer *bufio.Writer, writeMu *sync.Mutex) protocol.Frame {
 	switch frame.Command {
 	case protocol.CmdAuth:
 		return s.handleAuth(frame, authenticated)
@@ -151,7 +158,7 @@ func (s *TCPServer) dispatch(frame protocol.Frame, authenticated *bool, prefetch
 	case protocol.CmdPublishTopic:
 		return s.handlePublishTopicTCP(frame)
 	case protocol.CmdConsume:
-		return s.handleConsumeTCP(frame, prefetch, unackedCount, writer)
+		return s.handleConsumeTCP(frame, prefetch, unackedCount, writer, writeMu)
 	case protocol.CmdAck:
 		return s.handleAckTCP(frame, unackedCount)
 	case protocol.CmdNack:
@@ -303,7 +310,7 @@ type consumeRequest struct {
 	Durable bool   `json:"durable"`
 }
 
-func (s *TCPServer) handleConsumeTCP(frame protocol.Frame, prefetch *int, unackedCount *int, writer *bufio.Writer) protocol.Frame {
+func (s *TCPServer) handleConsumeTCP(frame protocol.Frame, prefetch *int, unackedCount *int, writer *bufio.Writer, writeMu *sync.Mutex) protocol.Frame {
 	var req consumeRequest
 	if err := json.Unmarshal(frame.Payload, &req); err != nil {
 		return s.errorFrame("invalid json: " + err.Error())
@@ -326,10 +333,42 @@ func (s *TCPServer) handleConsumeTCP(frame protocol.Frame, prefetch *int, unacke
 		if ch == nil {
 			return s.errorFrame("failed to subscribe")
 		}
-		// For now, BoltQ streams messages by simply having a goroutine
-		// that writes to the connection. To avoid race conditions on the writer,
-		// we should ideally have a write loop.
-		// For the sake of the E2E test, let's just confirm subscription.
+
+		// Now stream messages from the channel until the connection closes
+		go func() {
+			defer s.broker.Unsubscribe(req.Topic, req.ID)
+			for msg := range ch {
+				// Wrap message to include subscriber_id and ensure payload is handled as RawMessage
+				// to avoid base64 encoding of JSON payloads.
+				type streamingResponse struct {
+					ID            string            `json:"id"`
+					Topic         string            `json:"topic"`
+					Payload       json.RawMessage   `json:"payload"`
+					Headers       map[string]string `json:"headers,omitempty"`
+					Timestamp     int64             `json:"timestamp"`
+					SubscriberID  string            `json:"subscriber_id"`
+				}
+
+				resp := streamingResponse{
+					ID:            msg.ID,
+					Topic:         msg.Topic,
+					Payload:       json.RawMessage(msg.Payload),
+					Headers:       msg.Headers,
+					Timestamp:     msg.Timestamp,
+					SubscriberID:  req.ID,
+				}
+
+				data, _ := json.Marshal(resp)
+				frame := protocol.Frame{Command: protocol.StatusOK, Payload: data}
+				writeMu.Lock()
+				if err := protocol.WriteFrame(writer, frame); err != nil {
+					writeMu.Unlock()
+					return // Connection probably closed
+				}
+				writer.Flush()
+				writeMu.Unlock()
+			}
+		}()
 		return s.okFrame([]byte(`{"status":"subscribed"}`))
 	}
 

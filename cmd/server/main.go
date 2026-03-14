@@ -120,7 +120,7 @@ func main() {
 		} else if len(messages) > 0 {
 			log.Printf("[server] recovering %d messages from WAL", len(messages))
 			for _, msg := range messages {
-				b.Publish(msg.Topic, msg)
+				b.IngestRecovered(msg)
 			}
 		}
 	}

@@ -178,6 +178,15 @@ func (b *Broker) Publish(topic string, msg *protocol.Message) error {
 	return nil
 }
 
+// IngestRecovered adds a message to the broker without writing to WAL.
+// Used during startup recovery.
+func (b *Broker) IngestRecovered(msg *protocol.Message) {
+	q := b.getOrCreateQueue(msg.Topic)
+	if !q.Push(msg) {
+		b.spillToDisk(msg.Topic, msg)
+	}
+}
+
 func (b *Broker) spillToDisk(topic string, msg *protocol.Message) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -481,8 +490,10 @@ func (b *Broker) catchUpDurable(topicName string, subscriberID string, ch chan *
 
 		select {
 		case ch <- msg:
-			// Success
-			// For now, let's keep it simple: the next call will handle it.
+			// Success, continue looping
+		case <-time.After(5 * time.Second):
+			// Timeout or subscriber slow, put back and return to avoid goroutine leak
+			q.Push(msg)
 			return
 		}
 	}
