@@ -183,6 +183,12 @@ func (n *RaftNode) IsLeader() bool {
 	return n.raft.State() == raft.Leader
 }
 
+// VerifyLeader performs a round-trip to a quorum of nodes to verify leadership.
+func (n *RaftNode) VerifyLeader() error {
+	f := n.raft.VerifyLeader()
+	return f.Error()
+}
+
 // LeaderAddr returns the address of the current leader, or empty string if unknown.
 func (n *RaftNode) LeaderAddr() string {
 	addr, _ := n.raft.LeaderWithID()

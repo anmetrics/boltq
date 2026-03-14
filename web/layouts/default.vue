@@ -29,8 +29,10 @@
         <div class="pa-3">
           <v-divider class="mb-3" style="opacity: 0.1" />
           <div class="d-flex align-center justify-center">
-            <span class="status-dot online mr-2" />
-            <span class="text-caption" style="opacity: 0.5">Server Connected</span>
+            <span class="status-dot mr-2" :class="isOnline ? 'online' : 'offline'" />
+            <span class="text-caption" style="opacity: 0.5">
+              Server {{ isOnline ? 'Connected' : 'Disconnected' }}
+            </span>
           </div>
         </div>
       </template>
@@ -46,4 +48,5 @@
 
 <script setup lang="ts">
 const { items } = useNavigation()
+const { isOnline } = useServerStatus()
 </script>

@@ -6,9 +6,9 @@
         <p class="text-body-2 mt-1" style="opacity: 0.5">BoltQ Message Queue Overview</p>
       </div>
       <v-spacer />
-      <v-chip :color="serverOnline ? 'success' : 'error'" variant="flat" size="small" class="mr-2">
-        <span class="status-dot mr-2" :class="serverOnline ? 'online' : 'offline'" />
-        {{ serverOnline ? 'Online' : 'Offline' }}
+      <v-chip :color="isOnline ? 'success' : 'error'" variant="flat" size="small" class="mr-2">
+        <span class="status-dot mr-2" :class="isOnline ? 'online' : 'offline'" />
+        {{ isOnline ? 'Online' : 'Offline' }}
       </v-chip>
       <v-btn icon="mdi-refresh" variant="text" size="small" :loading="loading" @click="refresh" />
     </div>
@@ -119,9 +119,9 @@
 
 <script setup lang="ts">
 const api = useApi()
+const { isOnline, setOnline } = useServerStatus()
 
 const loading = ref(false)
-const serverOnline = ref(false)
 const overview = ref<any>(null)
 
 const metricCards = computed(() => {
@@ -164,9 +164,9 @@ async function refresh() {
   loading.value = true
   try {
     overview.value = await api.getOverview()
-    serverOnline.value = true
+    setOnline(true)
   } catch {
-    serverOnline.value = false
+    setOnline(false)
   } finally {
     loading.value = false
   }

@@ -147,6 +147,20 @@ func (q *Queue) Drain() []*protocol.Message {
 	return msgs
 }
 
+// HasMessage returns true if a message with the given ID exists in the queue.
+func (q *Queue) HasMessage(id string) bool {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	count := atomic.LoadInt64(&q.size)
+	for i := uint64(0); i < uint64(count); i++ {
+		pos := (q.tail + i) & q.mask
+		if q.buf[pos] != nil && q.buf[pos].ID == id {
+			return true
+		}
+	}
+	return false
+}
+
 func nextPowerOfTwo(n int) int {
 	if n <= 0 {
 		return 1

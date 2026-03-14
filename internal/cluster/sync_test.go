@@ -140,3 +140,62 @@ func TestClusterSync(t *testing.T) {
 	fmt.Println("Snapshot test PASSED")
 	fmt.Println("--- TestClusterSync Finished ---")
 }
+
+func TestIdempotency(t *testing.T) {
+	fmt.Println("--- Starting TestIdempotency ---")
+	dir1, _ := os.MkdirTemp("", "boltq-idemp-1")
+	dir2, _ := os.MkdirTemp("", "boltq-idemp-2")
+	defer os.RemoveAll(dir1)
+	defer os.RemoveAll(dir2)
+
+	b1 := broker.New(broker.Config{})
+	node1, _ := NewRaftNode(config.ClusterConfig{NodeID: "node1", RaftAddr: "127.0.0.1:9131", RaftDir: dir1, Bootstrap: true}, b1)
+	defer node1.Shutdown()
+
+	b2 := broker.New(broker.Config{})
+	node2, _ := NewRaftNode(config.ClusterConfig{NodeID: "node2", RaftAddr: "127.0.0.1:9132", RaftDir: dir2}, b2)
+	defer node2.Shutdown()
+
+	cb1 := NewClusterBroker(node1, b1)
+	time.Sleep(2 * time.Second) // wait for leader
+
+	node1.Join("node2", "127.0.0.1:9132")
+	time.Sleep(1 * time.Second)
+
+	// 1. Double Publish Test
+	fmt.Println("Testing Double Publish Idempotency...")
+	msgID := "idempotent-msg-1"
+	msg := &protocol.Message{ID: msgID, Payload: []byte("data")}
+	
+	// Apply first time
+	cb1.Publish("test-idemp", msg)
+	// Apply second time (same ID)
+	cb1.Publish("test-idemp", msg)
+	
+	time.Sleep(1 * time.Second)
+	stats1 := b1.Stats()
+	fmt.Printf("Message count after double publish: %d\n", stats1.Queues["test-idemp"])
+	if stats1.Queues["test-idemp"] != 1 {
+		t.Fatalf("idempotency failed: expected 1 message, got %d", stats1.Queues["test-idemp"])
+	}
+
+	// 2. Double Promotion Test
+	fmt.Println("Testing Double Promotion Idempotency...")
+	delayMsg := &protocol.Message{ID: "delay-id-1", Payload: []byte("delayed")}
+	delayMsg.Delay = int64(time.Hour) // long delay
+	cb1.Publish("test-delay-idemp", delayMsg)
+	time.Sleep(500 * time.Millisecond)
+
+	// Simulate double promotion by applying the command twice
+	cmd := &RaftCommand{Type: CmdRaftPromote, MessageID: "delay-id-1"}
+	node1.Apply(cmd, time.Second)
+	node1.Apply(cmd, time.Second)
+
+	time.Sleep(500 * time.Millisecond)
+	stats1 = b1.Stats()
+	if stats1.Queues["test-delay-idemp"] != 1 {
+		t.Fatalf("promotion idempotency failed: expected 1 message, got %d", stats1.Queues["test-delay-idemp"])
+	}
+
+	fmt.Println("Idempotency tests PASSED")
+}

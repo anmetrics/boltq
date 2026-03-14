@@ -36,6 +36,9 @@ func (cb *ClusterBroker) Publish(topic string, msg *protocol.Message) error {
 	if !cb.node.IsLeader() {
 		return cb.notLeaderError()
 	}
+	if err := cb.node.VerifyLeader(); err != nil {
+		return cb.notLeaderError()
+	}
 	msg.Topic = topic
 	cmd := &RaftCommand{Type: CmdRaftPublish, Topic: topic, Message: msg}
 	resp, err := cb.node.Apply(cmd, cb.applyTimeout)
@@ -64,6 +67,9 @@ func (cb *ClusterBroker) Consume(topic string) *protocol.Message {
 	if !cb.node.IsLeader() {
 		return nil
 	}
+	if err := cb.node.VerifyLeader(); err != nil {
+		return nil
+	}
 	cmd := &RaftCommand{Type: CmdRaftConsume, Topic: topic}
 	resp, err := cb.node.Apply(cmd, cb.applyTimeout)
 	if err != nil {
@@ -75,6 +81,9 @@ func (cb *ClusterBroker) Consume(topic string) *protocol.Message {
 // TryConsume retrieves a message through Raft consensus (non-blocking).
 func (cb *ClusterBroker) TryConsume(topic string) *protocol.Message {
 	if !cb.node.IsLeader() {
+		return nil
+	}
+	if err := cb.node.VerifyLeader(); err != nil {
 		return nil
 	}
 	cmd := &RaftCommand{Type: CmdRaftConsume, Topic: topic}
@@ -118,6 +127,9 @@ func (cb *ClusterBroker) Unsubscribe(topicName string, subscriberID string) {
 // Ack replicates an acknowledgment through Raft consensus.
 func (cb *ClusterBroker) Ack(messageID string) error {
 	if !cb.node.IsLeader() {
+		return cb.notLeaderError()
+	}
+	if err := cb.node.VerifyLeader(); err != nil {
 		return cb.notLeaderError()
 	}
 	cmd := &RaftCommand{Type: CmdRaftAck, MessageID: messageID}

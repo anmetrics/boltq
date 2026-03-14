@@ -194,6 +194,18 @@ func (b *Broker) Publish(topic string, msg *protocol.Message) error {
 // Used during startup recovery.
 func (b *Broker) IngestRecovered(msg *protocol.Message) {
 	now := time.Now().UnixNano()
+
+	// Proactive TTL check during recovery: if message has already expired, discard it.
+	if msg.ExpiresAt > 0 && msg.ExpiresAt <= now {
+		return // Expired based on absolute time
+	}
+	if msg.TTL > 0 {
+		expiresAt := msg.Timestamp + msg.TTL
+		if expiresAt <= now {
+			return // Expired based on relative TTL
+		}
+	}
+
 	if msg.DeliverAt > now {
 		b.mu.Lock()
 		b.delayed = append(b.delayed, msg)
@@ -411,6 +423,43 @@ func (b *Broker) PromoteDelayed(messageID string) error {
 		b.spillToDiskLocked(msg.Topic, msg)
 	}
 	return nil
+}
+
+// HasMessage checks if a message exists in any active queue or pending list.
+func (b *Broker) HasMessage(messageID string) bool {
+	// Check pending
+	b.pendingMu.RLock()
+	if _, ok := b.pending[messageID]; ok {
+		b.pendingMu.RUnlock()
+		return true
+	}
+	b.pendingMu.RUnlock()
+
+	// Check active queues (expensive, but necessary for idempotency)
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	for _, q := range b.queues {
+		if q.HasMessage(messageID) {
+			return true
+		}
+	}
+	return b.hasDelayedMessageLocked(messageID)
+}
+
+// HasDelayedMessage checks if a message exists in the delayed list.
+func (b *Broker) HasDelayedMessage(messageID string) bool {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.hasDelayedMessageLocked(messageID)
+}
+
+func (b *Broker) hasDelayedMessageLocked(messageID string) bool {
+	for _, m := range b.delayed {
+		if m.ID == messageID {
+			return true
+		}
+	}
+	return false
 }
 
 // reloadFromDisk reloads messages from spill files if there is space in the queue.

@@ -37,6 +37,10 @@ func (f *BrokerFSM) Apply(log *raft.Log) interface{} {
 
 	switch cmd.Type {
 	case CmdRaftPublish:
+		// Idempotency check: if message already exists, skip to avoid duplicates.
+		if f.broker.HasMessage(cmd.Message.ID) {
+			return &ApplyResponse{}
+		}
 		err := f.broker.Publish(cmd.Topic, cmd.Message)
 		return &ApplyResponse{Error: err}
 
@@ -57,6 +61,10 @@ func (f *BrokerFSM) Apply(log *raft.Log) interface{} {
 		return &ApplyResponse{Error: err}
 
 	case CmdRaftPromote:
+		// Idempotency check: only promote if it's still in the delayed list.
+		if !f.broker.HasDelayedMessage(cmd.MessageID) {
+			return &ApplyResponse{}
+		}
 		err := f.broker.PromoteDelayed(cmd.MessageID)
 		return &ApplyResponse{Error: err}
 
