@@ -1,52 +1,59 @@
 <template>
-  <div>
-    <div class="d-flex align-center mb-6">
+  <div class="obsidian-page">
+    <div class="d-flex align-center mb-8">
       <div>
-        <h1 class="text-h4 font-weight-bold">Pub/Sub Topics</h1>
-        <p class="text-body-2 mt-1" style="opacity: 0.5">Active topics and subscriber counts</p>
+        <h1 class="text-h4 font-weight-black gradient-text">Global Topics</h1>
+        <p class="text-caption text-grey mt-1">Active pub/sub channels and broadcast fan-out</p>
       </div>
       <v-spacer />
-      <v-btn icon="mdi-refresh" variant="text" size="small" :loading="loading" @click="refresh" />
+      <v-btn icon="mdi-refresh" variant="text" size="small" :loading="loading" @click="refresh" class="neon-btn" />
     </div>
 
-    <v-card class="data-table-card" color="surface">
-      <v-table hover>
+    <div class="glass-card table-card overflow-hidden">
+      <v-table density="compact" class="obsidian-table">
         <thead>
           <tr>
-            <th>Topic Name</th>
-            <th class="text-right">Subscribers</th>
-            <th class="text-right">Status</th>
+            <th class="text-left">Topic Name</th>
+            <th class="text-right">Fans (Subscribers)</th>
+            <th class="text-right">State</th>
           </tr>
         </thead>
         <tbody>
           <tr v-if="rows.length === 0">
-            <td colspan="3" class="text-center pa-8" style="opacity: 0.4">
-              <v-icon size="48" class="mb-2" style="opacity: 0.3">mdi-broadcast-off</v-icon>
-              <div>No topics created yet</div>
-              <div class="text-caption mt-1">Subscribe to a topic via TCP to see it here</div>
+            <td colspan="3" class="text-center pa-12">
+              <v-icon size="64" color="grey-darken-3" class="mb-4">mdi-broadcast-off</v-icon>
+              <div class="text-h6 text-grey-darken-1">No topics established</div>
+              <p class="text-caption text-grey-darken-2 mt-1">Subscribe via TCP to initialize a topic</p>
             </td>
           </tr>
           <tr v-for="t in rows" :key="t.name">
-            <td>
-              <span class="mono font-weight-medium">{{ t.name }}</span>
+            <td class="mono py-4">
+              <div class="d-flex align-center">
+                <v-icon size="14" class="mr-2 text-green">mdi-broadcast</v-icon>
+                <span class="text-green-accent-1">{{ t.name }}</span>
+              </div>
             </td>
             <td class="text-right">
-              <v-chip :color="t.subscribers > 0 ? 'secondary' : 'default'" size="small" variant="flat">
-                {{ t.subscribers }}
+              <v-chip :color="t.subscribers > 0 ? 'green' : 'grey-darken-3'" size="x-small" variant="tonal" class="font-weight-bold">
+                {{ t.subscribers }} subs
               </v-chip>
             </td>
             <td class="text-right">
-              <v-chip :color="t.subscribers > 0 ? 'success' : 'grey'" size="x-small" variant="flat">
-                {{ t.subscribers > 0 ? 'Active' : 'Idle' }}
-              </v-chip>
+              <div class="d-flex align-center justify-end">
+                <div class="status-indicator mr-2" :class="{ online: t.subscribers > 0 }" />
+                <span class="text-caption font-weight-bold" :class="t.subscribers > 0 ? 'text-green' : 'text-grey'">
+                  {{ t.subscribers > 0 ? 'ACTIVE' : 'IDLE' }}
+                </span>
+              </div>
             </td>
           </tr>
         </tbody>
       </v-table>
-      <div class="pa-4 text-caption" style="opacity: 0.3; border-top: 1px solid rgba(255,255,255,0.06)">
-        Total topics: {{ rows.length }}
+      <div class="footer-stats d-flex align-center px-4 py-3">
+        <v-icon size="14" class="mr-2 text-grey">mdi-information-outline</v-icon>
+        <span class="text-caption text-grey">Discovered Topics: {{ rows.length }}</span>
       </div>
-    </v-card>
+    </div>
   </div>
 </template>
 

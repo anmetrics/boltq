@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/boltq/boltq/internal/queue"
@@ -61,15 +62,20 @@ type Broker struct {
 	pendingMu   sync.RWMutex
 	maxRetry    int
 	ackTimeout  time.Duration
-	queueCap    int
+	queueCap            int
+	compactionThreshold int64
+	checkpointing       int32
+	needsCompaction     int32
+	walSize             int64 // atomic approximate size
 }
 
 // Config holds broker configuration.
 type Config struct {
-	MaxRetry   int
-	AckTimeout time.Duration
-	QueueCap   int
-	Storage    storage.Storage
+	MaxRetry            int
+	AckTimeout          time.Duration
+	QueueCap            int
+	Storage             storage.Storage
+	CompactionThreshold int64
 }
 
 // New creates a new broker with the given config.
@@ -84,23 +90,25 @@ func New(cfg Config) *Broker {
 		cfg.QueueCap = 1 << 20
 	}
 	spillDir := "./data/spill"
-	if cfg.Storage != nil {
-		// Try to get data dir from storage if possible, but for now use default
-	}
 
-	return &Broker{
-		queues:      make(map[string]*queue.Queue),
-		topics:      make(map[string]*Topic),
-		deadLetters: make(map[string]*queue.Queue),
-		pending:     make(map[string]*PendingMessage),
-		delayed:     make([]*protocol.Message, 0),
-		durableSubs: make(map[string]map[string]bool),
-		spillDir:    spillDir,
-		store:       cfg.Storage,
-		maxRetry:    cfg.MaxRetry,
-		ackTimeout:  cfg.AckTimeout,
-		queueCap:    cfg.QueueCap,
+	b := &Broker{
+		queues:              make(map[string]*queue.Queue),
+		topics:              make(map[string]*Topic),
+		deadLetters:         make(map[string]*queue.Queue),
+		pending:             make(map[string]*PendingMessage),
+		delayed:             make([]*protocol.Message, 0),
+		durableSubs:         make(map[string]map[string]bool),
+		spillDir:            spillDir,
+		store:               cfg.Storage,
+		maxRetry:            cfg.MaxRetry,
+		ackTimeout:          cfg.AckTimeout,
+		queueCap:            cfg.QueueCap,
+		compactionThreshold: cfg.CompactionThreshold,
 	}
+	if b.store != nil {
+		b.walSize = b.store.Size()
+	}
+	return b
 }
 
 // getOrCreateQueue returns an existing queue or creates a new one.
@@ -168,24 +176,30 @@ func (b *Broker) Publish(topic string, msg *protocol.Message) error {
 		msg.ExpiresAt = now + msg.TTL
 	}
 
+	// Lock for the entire duration of WAL write + Memory update to avoid race with Checkpoint.
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
 	// Persist to WAL if storage is configured.
 	if b.store != nil {
-		if err := b.store.Write(msg); err != nil {
+		n, err := b.store.Write(msg)
+		if err != nil {
 			return fmt.Errorf("storage write: %w", err)
 		}
+		atomic.AddInt64(&b.walSize, int64(n))
+		// Trigger auto-compaction check (outside the lock preferably, but let's just use the flag)
+		b.AutoCheckpoint()
 	}
 
 	if msg.DeliverAt > now {
-		b.mu.Lock()
 		b.delayed = append(b.delayed, msg)
-		b.mu.Unlock()
 		return nil
 	}
 
-	q := b.getOrCreateQueue(topic)
+	q := b.getOrCreateQueueLocked(topic)
 	if !q.Push(msg) {
 		// Spill to disk if queue is full
-		return b.spillToDisk(topic, msg)
+		return b.spillToDiskLocked(topic, msg)
 	}
 	return nil
 }
@@ -217,6 +231,69 @@ func (b *Broker) IngestRecovered(msg *protocol.Message) {
 	if !q.Push(msg) {
 		b.spillToDisk(msg.Topic, msg)
 	}
+}
+
+// Checkpoint triggers a WAL compaction by rewriting the entire storage with only active messages.
+func (b *Broker) Checkpoint() error {
+	if b.store == nil {
+		return nil
+	}
+
+	// 1. Capture state under lock
+	b.mu.Lock()
+	b.pendingMu.Lock()
+
+	var allMsgs []*protocol.Message
+	for _, q := range b.queues {
+		allMsgs = append(allMsgs, q.Drain()...)
+	}
+	for _, q := range b.deadLetters {
+		allMsgs = append(allMsgs, q.Drain()...)
+	}
+	allMsgs = append(allMsgs, b.delayed...)
+	for _, pm := range b.pending {
+		allMsgs = append(allMsgs, pm.Message)
+	}
+
+	b.pendingMu.Unlock()
+	b.mu.Unlock()
+
+	// 2. Perform disk I/O outside of locks
+	if err := b.store.Rewrite(allMsgs); err != nil {
+		return err
+	}
+
+	// 3. Sync approximate size after rewrite
+	atomic.StoreInt64(&b.walSize, b.store.Size())
+	return nil
+}
+
+// AutoCheckpoint checks if the WAL size exceeds the threshold and triggers a checkpoint.
+func (b *Broker) AutoCheckpoint() {
+	if b.store == nil || b.compactionThreshold <= 0 {
+		return
+	}
+
+	if atomic.LoadInt64(&b.walSize) <= b.compactionThreshold {
+		return
+	}
+
+	// Mark that a compaction is needed.
+	atomic.StoreInt32(&b.needsCompaction, 1)
+
+	// Try to start the compaction if not already running.
+	if !atomic.CompareAndSwapInt32(&b.checkpointing, 0, 1) {
+		return
+	}
+
+	go func() {
+		defer atomic.StoreInt32(&b.checkpointing, 0)
+		
+		// Continue running as long as compaction is needed.
+		for atomic.CompareAndSwapInt32(&b.needsCompaction, 1, 0) {
+			b.Checkpoint()
+		}
+	}()
 }
 
 func (b *Broker) spillToDisk(topic string, msg *protocol.Message) error {
@@ -259,13 +336,19 @@ func (b *Broker) spillToDiskLocked(topic string, msg *protocol.Message) error {
 func (b *Broker) PublishTopic(topicName string, msg *protocol.Message) error {
 	msg.Topic = topicName
 
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
 	if b.store != nil {
-		if err := b.store.Write(msg); err != nil {
+		n, err := b.store.Write(msg)
+		if err != nil {
 			return fmt.Errorf("storage write: %w", err)
 		}
+		atomic.AddInt64(&b.walSize, int64(n))
+		b.AutoCheckpoint()
 	}
 
-	t := b.getOrCreateTopic(topicName)
+	t := b.getOrCreateTopicLocked(topicName)
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 
@@ -279,19 +362,15 @@ func (b *Broker) PublishTopic(topicName string, msg *protocol.Message) error {
 	}
 
 	// Push to durable queues
-	b.mu.RLock()
 	subs := b.durableSubs[topicName]
-	b.mu.RUnlock()
-
 	for subID := range subs {
 		// Durable subscription name is "topic:subID"
 		qName := fmt.Sprintf("%s:%s", topicName, subID)
-		q := b.getOrCreateQueue(qName)
+		q := b.getOrCreateQueueLocked(qName)
 		if !q.Push(msg) {
-			b.spillToDisk(qName, msg)
+			b.spillToDiskLocked(qName, msg)
 		}
 	}
-
 	return nil
 }
 
@@ -646,11 +725,14 @@ func (b *Broker) Ack(messageID string) error {
 
 	// Persist ACK to storage if configured.
 	if b.store != nil {
-		if err := b.store.Ack(messageID); err != nil {
+		n, err := b.store.Ack(messageID)
+		if err != nil {
 			// Log error but don't fail ACK? Or fail?
 			// For consistency, we should probably log it.
 			fmt.Printf("[broker] storage ack error: %v\n", err)
 		}
+		atomic.AddInt64(&b.walSize, int64(n))
+		b.AutoCheckpoint()
 	}
 
 	return nil
@@ -739,6 +821,9 @@ func (b *Broker) PurgeQueue(topic string) (int64, error) {
 		return 0, fmt.Errorf("queue %s not found", topic)
 	}
 	count := q.Purge()
+	if count > 0 && b.store != nil {
+		b.Checkpoint()
+	}
 	return count, nil
 }
 
@@ -752,6 +837,9 @@ func (b *Broker) PurgeDeadLetters(topic string) (int64, error) {
 		return 0, fmt.Errorf("dead letter queue %s not found", dlName)
 	}
 	count := q.Purge()
+	if count > 0 && b.store != nil {
+		b.Checkpoint()
+	}
 	return count, nil
 }
 
@@ -893,6 +981,29 @@ func (b *Broker) RestoreFullState(state FullState) {
 	} else {
 		b.durableSubs = make(map[string]map[string]bool)
 	}
+}
+
+// StorageSize returns the current size of the underlying storage in bytes.
+func (b *Broker) StorageSize() int64 {
+	if b.store == nil {
+		return 0
+	}
+	return atomic.LoadInt64(&b.walSize)
+}
+
+// StorageMode returns the storage mode (memory or disk).
+func (b *Broker) StorageMode() string {
+	if b.store == nil {
+		return "memory"
+	}
+	// This is a bit of a hack, but DiskStorage implements Size() but doesn't expose its type easily.
+	// However, we can check if it's nil or not.
+	return "disk" // If store exists in current implementation, it's disk.
+}
+
+// CompactionThreshold returns the current compaction threshold.
+func (b *Broker) CompactionThreshold() int64 {
+	return b.compactionThreshold
 }
 
 // Close closes all queues.

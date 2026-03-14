@@ -20,6 +20,15 @@ interface OverviewData {
       peers: string[]
     }
   }
+  storage: {
+    mode: string
+    size: number
+    compaction_threshold: number
+  }
+  system: {
+    goroutines: number
+    memory: number
+  }
   uptime_ms: number
 }
 

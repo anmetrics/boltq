@@ -92,6 +92,7 @@ Two storage backends behind a common `Storage` interface:
 
 **Disk Storage** (WAL-based):
 - Write-Ahead Log for crash recovery
+- Automatic background compaction (Checkpointing)
 - Append-only binary format with CRC32 checksums
 - Buffered I/O (64KB write buffer)
 - Recovery: replay WAL on startup to rebuild queues
@@ -111,7 +112,7 @@ WAL Record Format:
 
 - **Integrity**: CRC32 checksum per record, corrupted records stop recovery
 - **Sync**: Configurable flush-to-disk via `Sync()`
-- **Compaction**: `Truncate()` resets the WAL file
+- **Compaction**: Automatic threshold-based rewrite removes processed messages
 
 ### 5. Scheduler (`internal/scheduler/`)
 

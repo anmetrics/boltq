@@ -203,6 +203,21 @@ func (cb *ClusterBroker) Stats() broker.Stats {
 	return cb.localBroker.Stats()
 }
 
+// StorageSize returns the current size of the underlying storage in bytes.
+func (cb *ClusterBroker) StorageSize() int64 {
+	return cb.localBroker.StorageSize()
+}
+
+// StorageMode returns the storage mode (memory or disk).
+func (cb *ClusterBroker) StorageMode() string {
+	return cb.localBroker.StorageMode()
+}
+
+// CompactionThreshold returns the current compaction threshold.
+func (cb *ClusterBroker) CompactionThreshold() int64 {
+	return cb.localBroker.CompactionThreshold()
+}
+
 // ProcessAdvancedFeatures processes delayed messages and maintenance on the leader.
 // It uses Raft to replicate state mutations to followers.
 func (cb *ClusterBroker) ProcessAdvancedFeatures() {

@@ -211,13 +211,16 @@ func TestQuorumLossAndRecovery(t *testing.T) {
 	defer os.RemoveAll(dir3)
 
 	// Start 3 nodes
-	b1 := broker.New(broker.Config{Storage: storage.MustNewDiskStorage(dir1 + "/data")})
+	s1 := storage.Storage(storage.MustNewDiskStorage(dir1 + "/data"))
+	b1 := broker.New(broker.Config{Storage: s1})
 	n1, _ := NewRaftNode(config.ClusterConfig{NodeID: "node1", RaftAddr: "127.0.0.1:9141", RaftDir: dir1, Bootstrap: true}, b1)
 
-	b2 := broker.New(broker.Config{Storage: storage.MustNewDiskStorage(dir2 + "/data")})
+	s2 := storage.Storage(storage.MustNewDiskStorage(dir2 + "/data"))
+	b2 := broker.New(broker.Config{Storage: s2})
 	n2, _ := NewRaftNode(config.ClusterConfig{NodeID: "node2", RaftAddr: "127.0.0.1:9142", RaftDir: dir2}, b2)
 
-	b3 := broker.New(broker.Config{Storage: storage.MustNewDiskStorage(dir3 + "/data")})
+	s3 := storage.Storage(storage.MustNewDiskStorage(dir3 + "/data"))
+	b3 := broker.New(broker.Config{Storage: s3})
 	n3, _ := NewRaftNode(config.ClusterConfig{NodeID: "node3", RaftAddr: "127.0.0.1:9143", RaftDir: dir3}, b3)
 
 	time.Sleep(2 * time.Second) // wait for leader
@@ -249,7 +252,8 @@ func TestQuorumLossAndRecovery(t *testing.T) {
 
 	// 4. Recovery: Restart node2
 	fmt.Println("Restarting node2 to restore quorum...")
-	b2_new := broker.New(broker.Config{Storage: storage.MustNewDiskStorage(dir2 + "/data")})
+	s2_new := storage.Storage(storage.MustNewDiskStorage(dir2 + "/data"))
+	b2_new := broker.New(broker.Config{Storage: s2_new})
 	// Fix: need to handle recovery of b2_new here if we want full state,
 	// but Raft will sync it anyway once it joins.
 	n2_new, _ := NewRaftNode(config.ClusterConfig{NodeID: "node2", RaftAddr: "127.0.0.1:9142", RaftDir: dir2}, b2_new)
@@ -281,7 +285,8 @@ func TestDurableSubscriptionPersistence(t *testing.T) {
 	defer os.RemoveAll(dir2)
 
 	// 1. Start cluster and create durable subscription
-	b1 := broker.New(broker.Config{Storage: storage.MustNewDiskStorage(dir1 + "/data")})
+	s1 := storage.Storage(storage.MustNewDiskStorage(dir1 + "/data"))
+	b1 := broker.New(broker.Config{Storage: s1})
 	n1, _ := NewRaftNode(config.ClusterConfig{NodeID: "node1", RaftAddr: "127.0.0.1:9151", RaftDir: dir1, Bootstrap: true}, b1)
 	defer n1.Shutdown()
 
@@ -305,7 +310,8 @@ func TestDurableSubscriptionPersistence(t *testing.T) {
 	n1.Shutdown()
 	time.Sleep(1 * time.Second)
 
-	b1_new := broker.New(broker.Config{Storage: storage.MustNewDiskStorage(dir1 + "/data")})
+	s1_new := storage.Storage(storage.MustNewDiskStorage(dir1 + "/data"))
+	b1_new := broker.New(broker.Config{Storage: s1_new})
 	n1_new, _ := NewRaftNode(config.ClusterConfig{NodeID: "node1", RaftAddr: "127.0.0.1:9151", RaftDir: dir1, Bootstrap: true}, b1_new)
 	defer n1_new.Shutdown()
 	

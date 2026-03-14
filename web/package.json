@@ -10,12 +10,15 @@
     "postinstall": "nuxt prepare"
   },
   "dependencies": {
-    "nuxt": "^3.16.0",
-    "vue": "^3.5.13",
-    "vue-router": "^4.5.0",
-    "vuetify": "^3.8.0",
     "@mdi/font": "^7.4.47",
-    "vite-plugin-vuetify": "^2.1.1"
+    "@vueuse/core": "^14.2.1",
+    "echarts": "^6.0.0",
+    "nuxt": "^3.16.0",
+    "vite-plugin-vuetify": "^2.1.1",
+    "vue": "^3.5.13",
+    "vue-echarts": "^8.0.1",
+    "vue-router": "^4.5.0",
+    "vuetify": "^3.8.0"
   },
   "devDependencies": {
     "@nuxt/devtools": "^2.3.0",

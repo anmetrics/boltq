@@ -18,11 +18,11 @@ func NewMemoryStorage() *MemoryStorage {
 	return &MemoryStorage{}
 }
 
-func (m *MemoryStorage) Write(msg *protocol.Message) error {
+func (m *MemoryStorage) Write(msg *protocol.Message) (int, error) {
 	m.mu.Lock()
 	m.messages = append(m.messages, msg)
 	m.mu.Unlock()
-	return nil
+	return 0, nil
 }
 
 func (m *MemoryStorage) ReadAllRecords() ([]*wal.WALRecord, error) {
@@ -38,10 +38,10 @@ func (m *MemoryStorage) ReadAllRecords() ([]*wal.WALRecord, error) {
 	return result, nil
 }
 
-func (m *MemoryStorage) Ack(msgID string) error {
+func (m *MemoryStorage) Ack(msgID string) (int, error) {
 	// For memory storage, we don't strictly need to track ACKs for recovery if we don't persist,
 	// but we implement it for interface compatibility.
-	return nil
+	return 0, nil
 }
 
 func (m *MemoryStorage) Close() error {

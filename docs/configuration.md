@@ -61,6 +61,7 @@ Pass the config file path with the `-config` flag:
 |-------|------|---------|-------------|
 | `mode` | string | `memory` | Storage mode: `memory` or `disk` |
 | `data_dir` | string | `./data` | Directory for WAL files (disk mode only) |
+| `compaction_threshold` | int64 | `104857600` | WAL size in bytes before automatic cleanup (100MB) |
 
 **Storage modes:**
 
@@ -103,6 +104,7 @@ Environment variables override config file values.
 | `BOLTQ_HTTP_PORT` | `server.http_port` | HTTP listening port |
 | `BOLTQ_STORAGE_MODE` | `storage.mode` | `memory` or `disk` |
 | `BOLTQ_DATA_DIR` | `storage.data_dir` | WAL data directory |
+| `BOLTQ_STORAGE_COMPACTION_THRESHOLD` | `storage.compaction_threshold` | WAL size threshold in bytes |
 | `BOLTQ_API_KEY` | `security.api_key` | API authentication key |
 
 ### Examples
@@ -130,6 +132,7 @@ HTTP Port:     9090
 Host:          0.0.0.0
 Storage:       memory
 Data Dir:      ./data
+Compaction Threshold: 100MB
 Max Retry:     5
 ACK Timeout:   30 seconds
 Queue Capacity: 1,048,576 (1M messages)

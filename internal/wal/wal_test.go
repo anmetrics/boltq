@@ -26,7 +26,7 @@ func TestWALWriteAndReadAll(t *testing.T) {
 	}
 
 	for _, msg := range msgs {
-		if err := w.Write(msg); err != nil {
+		if _, err := w.Write(msg); err != nil {
 			t.Fatalf("write: %v", err)
 		}
 	}

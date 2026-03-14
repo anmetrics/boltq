@@ -153,22 +153,29 @@ By default, `Write()` flushes to the OS but does not call `fsync()`. For maximum
 
 ## WAL Compaction
 
-The WAL file grows indefinitely as messages are appended. Use `Truncate()` for compaction:
+The WAL file can be compacted to remove acknowledged messages and reclaim disk space. BoltQ supports both manual and automatic compaction.
+
+### Automatic Compaction
+
+Triggers automatically when the WAL file size exceeds a configurable threshold.
+
+- **Config**: `storage.compaction_threshold` (default: 100MB)
+- **Mechanism**: The broker captures a consistent snapshot of all active messages and rewrites a clean WAL file.
+- **Background operation**: Compaction runs asynchronously to avoid blocking the message processing pipeline.
+
+### Manual Compaction
+
+Can be triggered programmatically or via administrative actions:
 
 ```go
-// Programmatic compaction
-wal.Truncate() // Resets the WAL file to empty
+broker.Checkpoint() // Snapshots current state and rewrites WAL
 ```
 
-**When to compact:**
-- After a clean shutdown (all queues drained)
-- During scheduled maintenance windows
-- When WAL file exceeds a size threshold
+### Benefits
 
-**Current limitation:** There is no automatic compaction. The WAL records all published messages, including those already consumed. Future versions may implement:
-- Checkpoint-based compaction
-- Segment rotation
-- Background compaction goroutine
+- **Reduced Disk Usage**: Reclaims space immediately after significant message consumption.
+- **Faster Recovery**: A smaller, compacted WAL means the server restarts and replays messages much faster.
+- **Consistent State**: Only unacknowledged messages are persisted, preventing unnecessary replays.
 
 ## Data Directory Layout
 
@@ -188,7 +195,7 @@ data/
 ## Limitations
 
 1. **No per-topic WAL**: All topics share one WAL file. Recovery replays all messages to all queues.
-2. **No compaction**: WAL grows until manually truncated.
+2. **Sequential Rewrite**: Compaction requires rewriting the entire WAL (though done in background).
 3. **No checksumming of WAL file itself**: Only individual records are checksummed.
-4. **Recovery replays everything**: Consumed messages are also replayed, potentially causing duplicates. Consumers should be idempotent.
-5. **Single WAL file**: No segment rotation. Very large WAL files may slow recovery.
+4. **Recovery replays active messages**: Only messages present in the WAL after compaction (or appended since) are replayed. Consumers should still be idempotent.
+5. **Single WAL file**: No segment rotation. Very large WAL files (before compaction) may slow recovery.

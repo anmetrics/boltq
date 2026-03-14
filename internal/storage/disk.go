@@ -28,7 +28,7 @@ func MustNewDiskStorage(dataDir string) *DiskStorage {
 	return s
 }
 
-func (d *DiskStorage) Write(msg *protocol.Message) error {
+func (d *DiskStorage) Write(msg *protocol.Message) (int, error) {
 	return d.wal.Write(msg)
 }
 
@@ -48,10 +48,26 @@ func (d *DiskStorage) ReadAllRecords() ([]*wal.WALRecord, error) {
 	return res, nil
 }
 
-func (d *DiskStorage) Ack(msgID string) error {
+func (d *DiskStorage) Ack(msgID string) (int, error) {
 	return d.wal.WriteAck(msgID)
 }
 
 func (d *DiskStorage) Close() error {
 	return d.wal.Close()
+}
+
+func (d *DiskStorage) Rewrite(msgs []*protocol.Message) error {
+	if err := d.wal.Truncate(); err != nil {
+		return err
+	}
+	for _, m := range msgs {
+		if _, err := d.wal.Write(m); err != nil {
+			return err
+		}
+	}
+	return d.wal.Sync()
+}
+
+func (d *DiskStorage) Size() int64 {
+	return d.wal.Size()
 }

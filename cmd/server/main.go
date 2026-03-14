@@ -54,6 +54,12 @@ func main() {
 	if key := os.Getenv("BOLTQ_API_KEY"); key != "" {
 		cfg.Security.APIKey = key
 	}
+	if v := os.Getenv("BOLTQ_STORAGE_COMPACTION_THRESHOLD"); v != "" {
+		var threshold int64
+		if _, err := fmt.Sscanf(v, "%d", &threshold); err == nil {
+			cfg.Storage.CompactionThreshold = threshold
+		}
+	}
 
 	// Cluster env overrides.
 	if v := os.Getenv("BOLTQ_CLUSTER_ENABLED"); v == "true" || v == "1" {
@@ -96,11 +102,11 @@ func main() {
 	var store storage.Storage
 	switch cfg.Storage.Mode {
 	case "disk":
-		var err error
-		store, err = storage.NewDiskStorage(cfg.Storage.DataDir)
+		s, err := storage.NewDiskStorage(cfg.Storage.DataDir)
 		if err != nil {
 			log.Fatalf("failed to init disk storage: %v", err)
 		}
+		store = s
 		log.Printf("[server] storage mode: disk (dir=%s)", cfg.Storage.DataDir)
 	default:
 		log.Printf("[server] storage mode: memory")
@@ -108,10 +114,11 @@ func main() {
 
 	// Initialize local broker.
 	b := broker.New(broker.Config{
-		MaxRetry:   cfg.Queue.MaxRetry,
-		AckTimeout: cfg.Queue.AckTimeout,
-		QueueCap:   cfg.Queue.Capacity,
-		Storage:    store,
+		MaxRetry:            cfg.Queue.MaxRetry,
+		AckTimeout:          cfg.Queue.AckTimeout,
+		QueueCap:            cfg.Queue.Capacity,
+		CompactionThreshold: cfg.Storage.CompactionThreshold,
+		Storage:             store,
 	})
 
 	// Recover from WAL if disk mode.
@@ -144,6 +151,13 @@ func main() {
 				}
 			}
 			log.Printf("[server] recovered %d messages from WAL (order preserved)", recoveredCount)
+
+			// Perform initial compaction to remove ACKs from WAL
+			if err := b.Checkpoint(); err != nil {
+				log.Printf("[server] initial WAL compaction failed: %v", err)
+			} else {
+				log.Printf("[server] WAL compacted after recovery")
+			}
 		}
 	}
 

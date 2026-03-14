@@ -57,28 +57,29 @@ func New(dir string) (*WAL, error) {
 	}, nil
 }
 
-// Write appends a message to the WAL.
-func (w *WAL) Write(msg *protocol.Message) error {
+// Write appends a message to the WAL. Returns number of bytes written.
+func (w *WAL) Write(msg *protocol.Message) (int, error) {
 	data, err := msg.Encode()
 	if err != nil {
-		return fmt.Errorf("encode message: %w", err)
+		return 0, fmt.Errorf("encode message: %w", err)
 	}
 	return w.writeRecord(RecordPublish, data)
 }
 
-// WriteAck appends an acknowledgment to the WAL.
-func (w *WAL) WriteAck(msgID string) error {
+// WriteAck appends an acknowledgment to the WAL. Returns number of bytes written.
+func (w *WAL) WriteAck(msgID string) (int, error) {
 	return w.writeRecord(RecordAck, []byte(msgID))
 }
 
-func (w *WAL) writeRecord(typ byte, data []byte) error {
+func (w *WAL) writeRecord(typ byte, data []byte) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
 	// Write length (4 bytes, little-endian).
 	// Length is type (1) + data length
 	var header [headerSize]byte
-	binary.LittleEndian.PutUint32(header[:4], uint32(1+len(data)))
+	totalDataLen := 1 + len(data)
+	binary.LittleEndian.PutUint32(header[:4], uint32(totalDataLen))
 
 	// Checksum over type + data
 	h := crc32.NewIEEE()
@@ -87,16 +88,20 @@ func (w *WAL) writeRecord(typ byte, data []byte) error {
 	binary.LittleEndian.PutUint32(header[4:8], h.Sum32())
 
 	if _, err := w.writer.Write(header[:]); err != nil {
-		return fmt.Errorf("write header: %w", err)
+		return 0, fmt.Errorf("write header: %w", err)
 	}
 	if _, err := w.writer.Write([]byte{typ}); err != nil {
-		return fmt.Errorf("write type: %w", err)
+		return 0, fmt.Errorf("write type: %w", err)
 	}
 	if _, err := w.writer.Write(data); err != nil {
-		return fmt.Errorf("write data: %w", err)
+		return 0, fmt.Errorf("write data: %w", err)
 	}
 
-	return w.writer.Flush()
+	if err := w.writer.Flush(); err != nil {
+		return 0, err
+	}
+	
+	return headerSize + totalDataLen, nil
 }
 
 // ReadAllRecords reads all records from the WAL file (for recovery).
@@ -219,4 +224,18 @@ func (w *WAL) Truncate() error {
 	_, err := w.file.Seek(0, 0)
 	w.writer.Reset(w.file)
 	return err
+}
+// Size returns the current size of the WAL file in bytes.
+func (w *WAL) Size() int64 {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	
+	// Flush before stat to get accurate size
+	w.writer.Flush()
+	
+	info, err := w.file.Stat()
+	if err != nil {
+		return 0
+	}
+	return info.Size()
 }

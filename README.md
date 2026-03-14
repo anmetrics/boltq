@@ -20,6 +20,7 @@ High-performance message queue server written in Go. Built for low latency, high
 - **Durable Subscriptions** — persistent message delivery for offline subscribers
 - **Spill-to-Disk** — bypass "Queue Full" errors by overflowing to disk
 - **WAL Persistence** — Write-Ahead Log for crash recovery
+- **WAL Compaction** — automatic log cleanup to prevent unbounded disk growth
 - **Prometheus Metrics** — `/metrics` endpoint
 - **API Key Auth** — optional authentication
 - **TLS Encryption** — full end-to-end encryption for TCP and HTTP
@@ -233,8 +234,9 @@ Set `BOLTQ_ADMIN_URL` to point to the BoltQ HTTP server (default: `http://localh
     "host": "0.0.0.0"
   },
   "storage": {
-    "mode": "memory",
-    "data_dir": "./data"
+    "mode": "disk",
+    "data_dir": "./data",
+    "compaction_threshold": 104857600
   },
   "queue": {
     "max_retry": 5,
@@ -272,6 +274,7 @@ Set `BOLTQ_ADMIN_URL` to point to the BoltQ HTTP server (default: `http://localh
 | `BOLTQ_TCP_PORT` | TCP messaging port (default: 9091) |
 | `BOLTQ_STORAGE_MODE` | `memory` or `disk` |
 | `BOLTQ_DATA_DIR` | Data directory |
+| `BOLTQ_STORAGE_COMPACTION_THRESHOLD` | WAL size (bytes) before compaction (default: 100MB) |
 | `BOLTQ_API_KEY` | API key for auth |
 | `BOLTQ_CLUSTER_ENABLED` | Enable cluster mode |
 | `BOLTQ_NODE_ID` | Node identifier (auto-generated from hostname if empty) |
@@ -296,6 +299,14 @@ Set `BOLTQ_ADMIN_URL` to point to the BoltQ HTTP server (default: `http://localh
 write → append WAL → push ring buffer
 restart → replay WAL → rebuild queues
 ```
+
+**WAL Compaction**
+
+BoltQ automatically compacts the WAL when it reaches a certain size. This process removes acknowledged messages and keeps only active ones, dramatically reducing disk usage.
+
+- **Manual**: Triggered via `Checkpoint()` in the internal API.
+- **Automatic**: Triggered when `queue.wal` exceeds `compaction_threshold`.
+- **Zero-downtime**: Compaction runs in the background without blocking publishers.
 
 ## Cluster Mode
 

@@ -18,6 +18,9 @@ type BrokerIface interface {
 	PurgeQueue(topic string) (int64, error)
 	PurgeDeadLetters(topic string) (int64, error)
 	Stats() Stats
+	StorageSize() int64
+	StorageMode() string
+	CompactionThreshold() int64
 	ProcessAdvancedFeatures()
 	Close()
 }

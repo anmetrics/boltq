@@ -13,6 +13,7 @@ import (
 	"github.com/boltq/boltq/internal/config"
 	"github.com/boltq/boltq/internal/metrics"
 	"github.com/boltq/boltq/pkg/protocol"
+	"runtime"
 )
 
 // HTTPServer provides the admin REST API (stats, metrics, health, cluster management).
@@ -131,6 +132,9 @@ func (s *HTTPServer) handleOverview(w http.ResponseWriter, r *http.Request) {
 	stats := s.broker.Stats()
 	snap := s.metrics.Snapshot()
 
+	var mem runtime.MemStats
+	runtime.ReadMemStats(&mem)
+
 	overview := map[string]interface{}{
 		"health": "ok",
 		"stats":  stats,
@@ -144,6 +148,15 @@ func (s *HTTPServer) handleOverview(w http.ResponseWriter, r *http.Request) {
 			"raft_apply_count":   snap.RaftApplyCount,
 			"snapshot_count":     snap.SnapshotCount,
 			"leader_changes":     snap.LeaderChanges,
+		},
+		"storage": map[string]interface{}{
+			"mode":                 s.broker.StorageMode(),
+			"size":                 s.broker.StorageSize(),
+			"compaction_threshold": s.broker.CompactionThreshold(),
+		},
+		"system": map[string]interface{}{
+			"goroutines": runtime.NumGoroutine(),
+			"memory":     mem.Alloc, // bytes allocated and not yet freed
 		},
 		"uptime_ms": time.Since(s.startTime()).Milliseconds(),
 	}

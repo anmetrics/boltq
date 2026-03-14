@@ -40,6 +40,9 @@ docker run -p 9090:9090 -p 9091:9091 boltq
 BOLTQ_STORAGE_MODE=disk BOLTQ_DATA_DIR=./data ./bin/boltq-server
 ```
 
+> [!TIP]
+> In disk mode, BoltQ automatically compacts the WAL to reclaim space. You can tune this via `BOLTQ_STORAGE_COMPACTION_THRESHOLD` (default: 100MB).
+
 **With config file**:
 ```bash
 ./bin/boltq-server -config configs/default.json

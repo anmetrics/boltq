@@ -47,8 +47,9 @@ type TLSConfig struct {
 }
 
 type StorageConfig struct {
-	Mode    string `json:"mode"` // "memory" or "disk"
-	DataDir string `json:"data_dir"`
+	Mode                string `json:"mode"` // "memory" or "disk"
+	DataDir             string `json:"data_dir"`
+	CompactionThreshold int64  `json:"compaction_threshold"` // size in bytes
 }
 
 type QueueConfig struct {
@@ -78,8 +79,9 @@ func Default() *Config {
 			},
 		},
 		Storage: StorageConfig{
-			Mode:    "memory",
-			DataDir: "./data",
+			Mode:                "memory",
+			DataDir:             "./data",
+			CompactionThreshold: 100 * 1024 * 1024, // 100MB
 		},
 		Queue: QueueConfig{
 			MaxRetry:   5,

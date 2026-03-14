@@ -40,7 +40,7 @@ html, body {
   height: 10px;
   border-radius: 50%;
   display: inline-block;
-  &.online { background: #66bb6a; box-shadow: 0 0 6px rgba(102, 187, 106, 0.5); }
+  &.online { background: #aff700; box-shadow: 0 0 6px rgba(102, 187, 106, 0.5); }
   &.offline { background: #ef5350; box-shadow: 0 0 6px rgba(239, 83, 80, 0.5); }
   &.warning { background: #ffa726; box-shadow: 0 0 6px rgba(255, 167, 38, 0.5); }
 }
