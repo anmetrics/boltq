@@ -19,6 +19,15 @@ func NewDiskStorage(dataDir string) (*DiskStorage, error) {
 	return &DiskStorage{wal: w}, nil
 }
 
+// MustNewDiskStorage creates a new disk-backed storage or panics.
+func MustNewDiskStorage(dataDir string) *DiskStorage {
+	s, err := NewDiskStorage(dataDir)
+	if err != nil {
+		panic(err)
+	}
+	return s
+}
+
 func (d *DiskStorage) Write(msg *protocol.Message) error {
 	return d.wal.Write(msg)
 }

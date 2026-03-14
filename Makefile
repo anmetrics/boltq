@@ -16,10 +16,10 @@ cli:
 # ───────────────────────────── Run ───────────────────────────────
 
 run: server
-	./bin/boltq-server
-
-run-disk: server
 	BOLTQ_STORAGE_MODE=disk ./bin/boltq-server
+
+run-mem: server
+	BOLTQ_STORAGE_MODE=memory ./bin/boltq-server
 
 # ───────────────────────────── Local Cluster (Dev) ───────────────
 #
@@ -35,24 +35,28 @@ run-disk: server
 #   node3: HTTP=9094  TCP=9095  Raft=9102
 
 cluster: server
-	@echo "==> Starting 3-node dev cluster..."
+	@echo "==> Starting 3-node dev cluster with DISK persistence..."
 	@mkdir -p data/node1/raft data/node2/raft data/node3/raft
+	@mkdir -p data/node1/data data/node2/data data/node3/data
 	@echo "==> Starting node1 (bootstrap leader)..."
 	@BOLTQ_CLUSTER_ENABLED=true BOLTQ_NODE_ID=node1 BOLTQ_RAFT_ADDR=127.0.0.1:9100 \
 		BOLTQ_RAFT_DIR=./data/node1/raft BOLTQ_BOOTSTRAP=true \
 		BOLTQ_HTTP_PORT=9090 BOLTQ_TCP_PORT=9091 \
+		BOLTQ_STORAGE_MODE=disk BOLTQ_DATA_DIR=./data/node1/data \
 		./bin/boltq-server > /tmp/boltq-node1.log 2>&1 & echo $$! > /tmp/boltq-node1.pid
 	@sleep 2
 	@echo "==> Starting node2 (join via seeds)..."
 	@BOLTQ_CLUSTER_ENABLED=true BOLTQ_NODE_ID=node2 BOLTQ_RAFT_ADDR=127.0.0.1:9101 \
 		BOLTQ_RAFT_DIR=./data/node2/raft BOLTQ_SEEDS=127.0.0.1:9090 \
 		BOLTQ_HTTP_PORT=9092 BOLTQ_TCP_PORT=9093 \
+		BOLTQ_STORAGE_MODE=disk BOLTQ_DATA_DIR=./data/node2/data \
 		./bin/boltq-server > /tmp/boltq-node2.log 2>&1 & echo $$! > /tmp/boltq-node2.pid
 	@sleep 1
 	@echo "==> Starting node3 (join via seeds)..."
 	@BOLTQ_CLUSTER_ENABLED=true BOLTQ_NODE_ID=node3 BOLTQ_RAFT_ADDR=127.0.0.1:9102 \
 		BOLTQ_RAFT_DIR=./data/node3/raft BOLTQ_SEEDS=127.0.0.1:9090,127.0.0.1:9092 \
 		BOLTQ_HTTP_PORT=9094 BOLTQ_TCP_PORT=9095 \
+		BOLTQ_STORAGE_MODE=disk BOLTQ_DATA_DIR=./data/node3/data \
 		./bin/boltq-server > /tmp/boltq-node3.log 2>&1 & echo $$! > /tmp/boltq-node3.pid
 	@sleep 1
 	@echo ""
