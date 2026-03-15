@@ -55,11 +55,18 @@ export class BoltQClient extends EventEmitter {
     this.port = port;
     this.apiKey = options.apiKey || null;
     this.timeout = options.timeout ?? 30000;
+    this.autoReconnect = options.autoReconnect !== false;
+    this.reconnectInterval = options.reconnectInterval ?? 2000;
 
     /** @type {Socket|null} */
     this._socket = null;
     this._connected = false;
     this._authenticated = false;
+    this._closing = false;
+
+    // Track subscriptions for recovery
+    // Map: topic:subscriberId -> { options, onMessage, handler }
+    this._subscriptions = new Map();
 
     // Request queue for serializing commands over a single connection
     this._pending = []; // [{resolve, reject, timer}]
@@ -113,6 +120,7 @@ export class BoltQClient extends EventEmitter {
    * Disconnect from the server.
    */
   disconnect() {
+    this._closing = true;
     if (this._socket) {
       this._socket.destroy();
       this._socket = null;
@@ -259,8 +267,17 @@ export class BoltQClient extends EventEmitter {
       throw new BoltQError(payload.error || 'Subscribe failed', 'SUBSCRIBE_ERROR');
     }
 
+    const key = `${topic}:${subscriberId}`;
     if (onMessage) {
-      this.on(`message:${topic}:${subscriberId}`, onMessage);
+      const wrappedHandler = (msg) => {
+        if (msg.topic === topic && msg.subscriber_id === subscriberId) {
+          onMessage(msg);
+        }
+      };
+      this._subscriptions.set(key, { topic, subscriberId, options, onMessage: wrappedHandler });
+      this.on('message', wrappedHandler);
+    } else {
+      this._subscriptions.set(key, { topic, subscriberId, options });
     }
   }
 
@@ -422,7 +439,9 @@ export class BoltQClient extends EventEmitter {
   }
 
   _onClose() {
+    const wasConnected = this._connected;
     this._connected = false;
+    this._authenticated = false;
     this.emit('close');
 
     // Reject remaining pending requests
@@ -432,6 +451,28 @@ export class BoltQClient extends EventEmitter {
     }
     this._pending = [];
     this._buffer = Buffer.alloc(0);
+
+    if (this.autoReconnect && !this._closing && wasConnected) {
+      setTimeout(() => {
+        this.connect()
+          .then(() => {
+            console.log('[boltq] reconnected, recovering subscriptions...');
+            for (const sub of this._subscriptions.values()) {
+              this._sendCommand(CMD_CONSUME, {
+                topic: sub.topic,
+                id: sub.subscriberId,
+                durable: !!sub.options.durable
+              }).catch(err => {
+                console.error(`[boltq] failed to recover subscription to ${sub.topic}:`, err.message);
+              });
+            }
+          })
+          .catch(err => {
+            console.error('[boltq] reconnection failed:', err.message);
+            this._onClose(); // Retry again
+          });
+      }, this.reconnectInterval);
+    }
   }
 }
 

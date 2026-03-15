@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
@@ -23,6 +24,13 @@ type Client struct {
 	reader *bufio.Reader
 	writer *bufio.Writer
 	mu     sync.Mutex // serializes commands over the connection
+
+	autoReconnect     bool
+	reconnectInterval time.Duration
+
+	subsMu sync.RWMutex
+	subs   map[string]chan *Message // key: topic:subscriberID
+	active bool                     // whether dispatcher is running
 }
 
 // Message represents a consumed message.
@@ -87,11 +95,23 @@ func WithTLS(config *tls.Config) Option {
 	return func(c *Client) { c.tlsConfig = config }
 }
 
+// WithAutoReconnect enables or disables automatic reconnection.
+func WithAutoReconnect(enabled bool) Option {
+	return func(c *Client) { c.autoReconnect = enabled }
+}
+
+// WithReconnectInterval sets the interval between reconnection attempts.
+func WithReconnectInterval(d time.Duration) Option {
+	return func(c *Client) { c.reconnectInterval = d }
+}
+
 // New creates a new BoltQ TCP client. addr should be "host:port".
 func New(addr string, opts ...Option) *Client {
 	c := &Client{
-		addr:    addr,
-		timeout: 10 * time.Second,
+		addr:              addr,
+		timeout:           10 * time.Second,
+		autoReconnect:     true,
+		reconnectInterval: 2 * time.Second,
 	}
 	for _, opt := range opts {
 		opt(c)
@@ -132,11 +152,22 @@ func (c *Client) Connect() error {
 		}
 	}
 
+	// Restart dispatcher if needed
+	c.subsMu.Lock()
+	if !c.active {
+		c.active = true
+		go c.dispatcher()
+	}
+	c.subsMu.Unlock()
+
 	return nil
 }
 
 // Close closes the TCP connection.
 func (c *Client) Close() error {
+	c.subsMu.Lock()
+	c.active = false
+	c.subsMu.Unlock()
 	if c.conn != nil {
 		return c.conn.Close()
 	}
@@ -247,23 +278,95 @@ func (c *Client) Subscribe(topic string, subscriberID string, durable bool) (<-c
 		return nil, &errResp
 	}
 
+	key := fmt.Sprintf("%s:%s", topic, subscriberID)
 	ch := make(chan *Message, 100)
-	go func() {
-		defer close(ch)
-		for {
-			var frame protocol.Frame
-			frame, err = protocol.ReadFrame(c.reader)
-			if err != nil {
-				return
-			}
-			var msg Message
-			if err := json.Unmarshal(frame.Payload, &msg); err == nil {
-				ch <- &msg
-			}
-		}
-	}()
+
+	c.subsMu.Lock()
+	if c.subs == nil {
+		c.subs = make(map[string]chan *Message)
+	}
+	c.subs[key] = ch
+	c.subsMu.Unlock()
 
 	return ch, nil
+}
+
+func (c *Client) dispatcher() {
+	for {
+		c.subsMu.Lock()
+		if !c.active {
+			c.subsMu.Unlock()
+			return
+		}
+		c.subsMu.Unlock()
+
+		frame, err := protocol.ReadFrame(c.reader)
+		if err != nil {
+			if !c.autoReconnect {
+				return
+			}
+
+			// Try to reconnect
+			time.Sleep(c.reconnectInterval)
+			if err := c.Connect(); err != nil {
+				continue
+			}
+
+			// Resubscribe all
+			c.subsMu.RLock()
+			for key := range c.subs {
+				parts := strings.SplitN(key, ":", 2)
+				if len(parts) != 2 {
+					continue
+				}
+				body, _ := json.Marshal(map[string]interface{}{
+					"topic":   parts[0],
+					"id":      parts[1],
+					"durable": true, // Assume durable for recovery
+				})
+				c.sendCommand(protocol.CmdConsume, body)
+			}
+			c.subsMu.RUnlock()
+			continue
+		}
+
+		var msg Message
+		if err := json.Unmarshal(frame.Payload, &msg); err == nil {
+			// Find subscriber by topic (for simple pubsub) or subscriber_id (for work queues)
+			// The protocol doesn't explicitly send subscriber_id in the frame yet, 
+			// let's assume we match by topic for now or extract from payload if available.
+			
+			var meta struct {
+				SubscriberID string `json:"subscriber_id"`
+			}
+			json.Unmarshal(frame.Payload, &meta)
+
+			key := msg.Topic
+			if meta.SubscriberID != "" {
+				key = fmt.Sprintf("%s:%s", msg.Topic, meta.SubscriberID)
+			} else {
+				// Fallback to searching for any subscriber for this topic
+				c.subsMu.RLock()
+				for k := range c.subs {
+					if strings.HasPrefix(k, msg.Topic+":") {
+						key = k
+						break
+					}
+				}
+				c.subsMu.RUnlock()
+			}
+
+			c.subsMu.RLock()
+			if subCh, ok := c.subs[key]; ok {
+				select {
+				case subCh <- &msg:
+				default:
+					// Buffer full, drop or handle?
+				}
+			}
+			c.subsMu.RUnlock()
+		}
+	}
 }
 
 // Ack acknowledges a message.
@@ -329,7 +432,16 @@ func (c *Client) Health() error {
 func (c *Client) command(cmd byte, payload []byte) ([]byte, error) {
 	frame, err := c.sendCommand(cmd, payload)
 	if err != nil {
-		return nil, err
+		// Try to reconnect once if auto-reconnect is enabled and it's a connection error
+		if c.autoReconnect {
+			if connectErr := c.Connect(); connectErr == nil {
+				frame, err = c.sendCommand(cmd, payload)
+			}
+		}
+
+		if err != nil {
+			return nil, err
+		}
 	}
 	if frame.Command == protocol.StatusNotLeader {
 		return nil, parseNotLeaderError(frame.Payload)

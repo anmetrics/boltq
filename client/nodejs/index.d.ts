@@ -10,6 +10,10 @@ export interface BoltQClientOptions {
   apiKey?: string;
   /** Request timeout in milliseconds. Default: 30000. */
   timeout?: number;
+  /** Enable automatic reconnection. Default: true. */
+  autoReconnect?: boolean;
+  /** Interval between reconnection attempts in milliseconds. Default: 2000. */
+  reconnectInterval?: number;
 }
 
 export interface PublishResult {
