@@ -4,12 +4,7 @@
     <div class="bg-glow bg-glow-1"></div>
     <div class="bg-glow bg-glow-2"></div>
 
-    <v-navigation-drawer 
-      permanent 
-      width="240" 
-      class="sidebar-glass"
-      border="0"
-    >
+    <v-navigation-drawer permanent width="240" class="sidebar-glass" border="0">
       <!-- Logo Section -->
       <div class="logo-section pa-6">
         <div class="logo-container">
@@ -32,7 +27,9 @@
           exact
           class="nav-item mb-1"
         >
-          <v-list-item-title class="nav-title">{{ item.title }}</v-list-item-title>
+          <v-list-item-title class="nav-title">{{
+            item.title
+          }}</v-list-item-title>
         </v-list-item>
       </v-list>
 
@@ -41,11 +38,19 @@
         <div class="pa-6">
           <div class="status-card pa-4">
             <div class="d-flex align-center justify-space-between mb-1">
-              <span class="text-caption text-muted font-weight-bold">SERVER STATUS</span>
-              <span class="status-dot" :class="isOnline ? 'online' : 'offline'" />
+              <span class="text-caption text-muted font-weight-bold"
+                >SERVER STATUS</span
+              >
+              <span
+                class="status-dot"
+                :class="isOnline ? 'online' : 'offline'"
+              />
             </div>
-            <div class="text-body-2 font-weight-black" :class="isOnline ? 'text-secondary' : 'text-red'">
-              {{ isOnline ? 'OPERATIONAL' : 'OFFLINE' }}
+            <div
+              class="text-body-2 font-weight-black"
+              :class="isOnline ? 'text-secondary' : 'text-red'"
+            >
+              {{ isOnline ? "OPERATIONAL" : "OFFLINE" }}
             </div>
           </div>
         </div>
@@ -61,8 +66,8 @@
 </template>
 
 <script setup lang="ts">
-const { items } = useNavigation()
-const { isOnline } = useServerStatus()
+const { items } = useNavigation();
+const { isOnline } = useServerStatus();
 </script>
 
 <style lang="scss" scoped>
@@ -82,22 +87,24 @@ const { isOnline } = useServerStatus()
 }
 
 .bg-glow-1 {
-  top: -10%;
+  top: -20%;
   left: -10%;
   background: var(--primary);
+  opacity: 0.1;
 }
 
 .bg-glow-2 {
-  bottom: -10%;
-  right: -10%;
+  top: 10%;
+  right: -15%;
   background: var(--accent);
+  opacity: 0.1;
 }
 
 .sidebar-glass {
-  background: rgba(10, 10, 12, 0.4) !important;
-  backdrop-filter: blur(20px) !important;
-  -webkit-backdrop-filter: blur(20px) !important;
-  border-right: 1px solid var(--glass-border) !important;
+  background: rgba(12, 12, 14, 0.8) !important;
+  backdrop-filter: blur(40px) saturate(150%) !important;
+  -webkit-backdrop-filter: blur(40px) saturate(150%) !important;
+  border-right: 1px solid rgba(255, 255, 255, 0.1) !important;
   display: flex;
   flex-direction: column;
 }
@@ -106,7 +113,7 @@ const { isOnline } = useServerStatus()
   .logo-container {
     display: flex;
     align-items: center;
-    
+
     .logo-text {
       line-height: 1;
       .bolt {
@@ -132,9 +139,10 @@ const { isOnline } = useServerStatus()
 }
 
 .status-card {
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid var(--glass-border);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.15);
   border-radius: 12px;
+  box-shadow: inset 0 0 20px rgba(0, 0, 0, 0.3);
 }
 
 .app-content-wrapper {

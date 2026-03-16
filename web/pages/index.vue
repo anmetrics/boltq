@@ -3,18 +3,35 @@
     <!-- Header Section -->
     <header class="dashboard-header d-flex align-center mb-10">
       <div>
-        <h1 class="text-h3 font-weight-black gradient-text-primary mb-1">Infrastructure Control</h1>
+        <h1 class="text-h3 font-weight-black gradient-text-primary mb-1">
+          Infrastructure Control
+        </h1>
         <div class="d-flex align-center">
-          <div class="status-indicator-group d-flex align-center px-3 py-1 bg-surface-subtle rounded-pill">
-            <span class="status-dot mr-2" :class="isOnline ? 'online' : 'offline'" />
-            <span class="text-caption font-weight-bold letter-spacing-1" :class="isOnline ? 'text-secondary' : 'text-error'">
-              SYSTEM {{ isOnline ? 'OPERATIONAL' : 'OFFLINE' }}
+          <div
+            class="status-indicator-group d-flex align-center px-3 py-1 bg-surface-subtle rounded-pill"
+          >
+            <span
+              class="status-dot mr-2"
+              :class="isOnline ? 'online' : 'offline'"
+            />
+            <span
+              class="text-caption font-weight-bold letter-spacing-1"
+              :class="isOnline ? 'text-secondary' : 'text-error'"
+            >
+              SYSTEM {{ isOnline ? "OPERATIONAL" : "OFFLINE" }}
             </span>
           </div>
           <v-divider vertical class="mx-4 my-2" style="opacity: 0.1" />
-          <div class="d-flex align-center text-caption text-muted font-weight-medium">
+          <div
+            class="d-flex align-center text-caption text-muted font-weight-medium"
+          >
             <v-icon size="14" class="mr-1">mdi-clock-outline</v-icon>
-            UPTIME: {{ overview?.uptime_ms ? formatUptime(overview.uptime_ms) : '--:--:--' }}
+            UPTIME:
+            {{
+              overview?.uptime_ms
+                ? formatUptime(overview.uptime_ms)
+                : "--:--:--"
+            }}
           </div>
         </div>
       </div>
@@ -22,13 +39,15 @@
       <div class="actions-group d-flex align-center">
         <div class="auto-sync-badge mr-4 d-none d-sm-flex align-center">
           <div class="pulse-ring mr-2"></div>
-          <span class="text-caption text-muted font-weight-bold">LIVE SYNC</span>
+          <span class="text-caption text-muted font-weight-bold"
+            >LIVE SYNC</span
+          >
         </div>
         <v-btn
           variant="tonal"
           color="primary"
-          class="refresh-btn px-6"
-          rounded="xl"
+          class="refresh-btn px-6 font-weight-black"
+          rounded="lg"
           :loading="loading"
           @click="refresh"
           prepend-icon="mdi-refresh"
@@ -49,17 +68,28 @@
         lg="2"
       >
         <div class="glass-card metric-card h-100 pa-5">
-          <div class="metric-icon-box mb-4" :style="{ '--accent-color': card.color }">
+          <div
+            class="metric-icon-box mb-4"
+            :style="{ '--accent-color': card.color }"
+          >
             <v-icon :color="card.color" size="24">{{ card.icon }}</v-icon>
             <div class="icon-glow"></div>
           </div>
           <div class="metric-content">
             <div class="metric-label mb-1">{{ card.label }}</div>
-            <div class="metric-value font-weight-black">{{ formatNumber(card.value) }}</div>
+            <div class="metric-value font-weight-black">
+              {{ formatNumber(card.value) }}
+            </div>
             <div class="metric-footer d-flex align-center mt-2">
-              <span class="text-caption font-weight-bold" :style="{ color: card.color }">{{ card.trend }}</span>
+              <span
+                class="text-caption font-weight-bold"
+                :style="{ color: card.color }"
+                >{{ card.trend }}</span
+              >
               <v-spacer />
-              <v-icon size="16" color="muted" style="opacity: 0.3">mdi-chevron-right</v-icon>
+              <v-icon size="16" color="muted" style="opacity: 0.3"
+                >mdi-chevron-right</v-icon
+              >
             </div>
           </div>
         </div>
@@ -77,12 +107,22 @@
             </div>
             <div class="chart-legends d-flex align-center">
               <div class="legend-item mr-6">
-                <span class="legend-dot" style="background: var(--primary)"></span>
-                <span class="text-caption font-weight-bold text-muted">PUBLISHED</span>
+                <span
+                  class="legend-dot"
+                  style="background: var(--primary)"
+                ></span>
+                <span class="text-caption font-weight-bold text-muted"
+                  >PUBLISHED</span
+                >
               </div>
               <div class="legend-item">
-                <span class="legend-dot" style="background: var(--secondary)"></span>
-                <span class="text-caption font-weight-bold text-muted">CONSUMED</span>
+                <span
+                  class="legend-dot"
+                  style="background: var(--secondary)"
+                ></span>
+                <span class="text-caption font-weight-bold text-muted"
+                  >CONSUMED</span
+                >
               </div>
             </div>
           </div>
@@ -100,22 +140,40 @@
               <v-icon color="amber" size="20" class="mr-3">mdi-chip</v-icon>
               <h3 class="text-subtitle-1 font-weight-bold">System Pulse</h3>
             </div>
-            
+
             <div class="resource-meters">
               <div class="meter-item mb-5">
                 <div class="d-flex align-center justify-space-between mb-2">
-                  <span class="text-caption font-weight-bold text-muted">GOROUTINES</span>
-                  <span class="text-body-2 font-weight-black text-amber">{{ overview?.system?.goroutines || 0 }}</span>
+                  <span class="text-caption font-weight-bold text-muted"
+                    >GOROUTINES</span
+                  >
+                  <span class="text-body-2 font-weight-black text-amber">{{
+                    overview?.system?.goroutines || 0
+                  }}</span>
                 </div>
-                <v-progress-linear model-value="65" color="amber" height="4" rounded />
+                <v-progress-linear
+                  model-value="65"
+                  color="amber"
+                  height="4"
+                  rounded
+                />
               </div>
 
               <div class="meter-item">
                 <div class="d-flex align-center justify-space-between mb-2">
-                  <span class="text-caption font-weight-bold text-muted">HEAP MEMORY</span>
-                  <span class="text-body-2 font-weight-black text-amber">{{ formatBytes(overview?.system?.memory || 0) }}</span>
+                  <span class="text-caption font-weight-bold text-muted"
+                    >HEAP MEMORY</span
+                  >
+                  <span class="text-body-2 font-weight-black text-amber">{{
+                    formatBytes(overview?.system?.memory || 0)
+                  }}</span>
                 </div>
-                <v-progress-linear model-value="45" color="amber" height="4" rounded />
+                <v-progress-linear
+                  model-value="45"
+                  color="amber"
+                  height="4"
+                  rounded
+                />
               </div>
             </div>
           </div>
@@ -123,26 +181,46 @@
           <!-- Storage Integrity -->
           <div class="glass-card system-card pa-6 flex-grow-1">
             <div class="d-flex align-center mb-6">
-              <v-icon color="accent" size="20" class="mr-3">mdi-database</v-icon>
-              <h3 class="text-subtitle-1 font-weight-bold">Storage Integrity</h3>
+              <v-icon color="accent" size="20" class="mr-3"
+                >mdi-database</v-icon
+              >
+              <h3 class="text-subtitle-1 font-weight-bold">
+                Storage Integrity
+              </h3>
             </div>
-            
-            <div class="storage-info text-center py-6 bg-surface-subtle rounded-lg mb-4">
-              <div class="text-caption font-weight-bold text-muted mb-1">CURRENT DATA VOLUME</div>
-              <div class="text-h4 font-weight-black text-accent-light">{{ formatBytes(overview?.storage?.size || 0) }}</div>
+
+            <div
+              class="storage-info text-center py-6 bg-surface-subtle rounded-lg mb-4"
+            >
+              <div class="text-caption font-weight-bold text-muted mb-1">
+                CURRENT DATA VOLUME
+              </div>
+              <div class="text-h4 font-weight-black text-accent-light">
+                {{ formatBytes(overview?.storage?.size || 0) }}
+              </div>
             </div>
 
             <div class="storage-details">
-              <v-progress-linear 
-                :model-value="storagePercent" 
-                color="accent" 
-                height="8" 
-                rounded 
-                class="mb-3 progress-glow" 
+              <v-progress-linear
+                :model-value="storagePercent"
+                color="accent"
+                height="6"
+                rounded
+                class="mb-3 progress-glow"
               />
-              <div class="d-flex justify-space-between text-caption font-weight-bold text-muted">
-                <span>MODE: {{ overview?.storage?.mode?.toUpperCase() || 'N/A' }}</span>
-                <span>THRESHOLD: {{ formatBytes(overview?.storage?.compaction_threshold || 0) }}</span>
+              <div
+                class="d-flex justify-space-between text-caption font-weight-bold text-muted"
+              >
+                <span
+                  >MODE:
+                  {{ overview?.storage?.mode?.toUpperCase() || "N/A" }}</span
+                >
+                <span
+                  >THRESHOLD:
+                  {{
+                    formatBytes(overview?.storage?.compaction_threshold || 0)
+                  }}</span
+                >
               </div>
             </div>
           </div>
@@ -158,7 +236,14 @@
             <v-icon color="primary" class="mr-3">mdi-tray-full</v-icon>
             <h3 class="text-h6 font-weight-bold">Active Message Hubs</h3>
             <v-spacer />
-            <v-btn to="/queues" variant="text" color="primary" size="small" rounded="lg">EXPLORE ALL</v-btn>
+            <v-btn
+              to="/queues"
+              variant="text"
+              color="primary"
+              size="small"
+              rounded="lg"
+              >EXPLORE ALL</v-btn
+            >
           </div>
           <v-table class="premium-table">
             <thead>
@@ -171,7 +256,9 @@
             <tbody>
               <tr v-for="q in queueRows.slice(0, 5)" :key="q.name">
                 <td class="mono font-weight-bold text-primary">{{ q.name }}</td>
-                <td class="text-right mono font-weight-black">{{ formatNumber(q.messages) }}</td>
+                <td class="text-right mono font-weight-black">
+                  {{ formatNumber(q.messages) }}
+                </td>
                 <td class="text-right">
                   <v-chip
                     v-if="q.deadLetters > 0"
@@ -196,7 +283,14 @@
             <v-icon color="secondary" class="mr-3">mdi-broadcast</v-icon>
             <h3 class="text-h6 font-weight-bold">Global Topics</h3>
             <v-spacer />
-            <v-btn to="/topics" variant="text" color="secondary" size="small" rounded="lg">EXPLORE ALL</v-btn>
+            <v-btn
+              to="/topics"
+              variant="text"
+              color="secondary"
+              size="small"
+              rounded="lg"
+              >EXPLORE ALL</v-btn
+            >
           </div>
           <v-table class="premium-table">
             <thead>
@@ -207,11 +301,19 @@
             </thead>
             <tbody>
               <tr v-for="t in topicRows.slice(0, 5)" :key="t.name">
-                <td class="mono font-weight-bold text-secondary">{{ t.name }}</td>
+                <td class="mono font-weight-bold text-secondary">
+                  {{ t.name }}
+                </td>
                 <td class="text-right">
-                  <div class="subscriber-badge d-inline-flex align-center px-3 py-1 rounded-pill">
-                    <v-icon size="12" color="secondary" class="mr-2">mdi-account-group</v-icon>
-                    <span class="text-caption font-weight-black text-secondary">{{ t.subscribers }} ENTHUSIASTS</span>
+                  <div
+                    class="subscriber-badge d-inline-flex align-center px-3 py-1 rounded-pill"
+                  >
+                    <v-icon size="12" color="secondary" class="mr-2"
+                      >mdi-account-group</v-icon
+                    >
+                    <span class="text-caption font-weight-black text-secondary"
+                      >{{ t.subscribers }} ENTHUSIASTS</span
+                    >
                   </div>
                 </td>
               </tr>
@@ -231,7 +333,9 @@ const { isOnline, setOnline } = useServerStatus();
 
 const loading = ref(false);
 const overview = ref<any>(null);
-const history = ref<{ time: string; published: number; consumed: number }[]>([]);
+const history = ref<{ time: string; published: number; consumed: number }[]>(
+  [],
+);
 const MAX_HISTORY = 30;
 
 const metricCards = computed(() => {
@@ -319,21 +423,21 @@ const throughputOption = computed(() => {
     },
     tooltip: {
       trigger: "axis",
-      backgroundColor: "rgba(18, 18, 23, 0.9)",
-      borderColor: "rgba(255, 255, 255, 0.1)",
+      backgroundColor: "rgba(9, 9, 11, 0.95)",
+      borderColor: "rgba(255, 255, 255, 0.15)",
       borderWidth: 1,
       padding: [12, 16],
-      textStyle: { 
+      textStyle: {
         color: "#fff",
-        fontFamily: 'Inter',
-        fontSize: 12
+        fontFamily: "Inter",
+        fontSize: 12,
       },
       axisPointer: {
         lineStyle: {
-          color: 'rgba(255, 255, 255, 0.2)',
-          type: 'dashed'
-        }
-      }
+          color: "rgba(255, 255, 255, 0.2)",
+          type: "dashed",
+        },
+      },
     },
     xAxis: {
       type: "category",
@@ -344,11 +448,11 @@ const throughputOption = computed(() => {
     },
     yAxis: {
       type: "value",
-      splitLine: { 
-        lineStyle: { 
+      splitLine: {
+        lineStyle: {
           color: "rgba(255, 255, 255, 0.03)",
-          type: 'solid'
-        } 
+          type: "solid",
+        },
       },
       axisLabel: { color: "#626771", fontSize: 10 },
     },
@@ -359,12 +463,20 @@ const throughputOption = computed(() => {
         smooth: 0.4,
         showSymbol: false,
         data: history.value.map((h) => h.published),
-        lineStyle: { width: 4, color: "#00f2ff", shadowBlur: 20, shadowColor: 'rgba(0, 242, 155, 0.5)' },
+        lineStyle: {
+          width: 4,
+          color: "#00f2ff",
+          shadowBlur: 20,
+          shadowColor: "rgba(0, 242, 155, 0.5)",
+        },
         areaStyle: {
           opacity: 0.05,
           color: {
             type: "linear",
-            x: 0, y: 0, x2: 0, y2: 1,
+            x: 0,
+            y: 0,
+            x2: 0,
+            y2: 1,
             colorStops: [
               { offset: 0, color: "#00f2ff" },
               { offset: 1, color: "transparent" },
@@ -378,12 +490,20 @@ const throughputOption = computed(() => {
         smooth: 0.4,
         showSymbol: false,
         data: history.value.map((h) => h.consumed),
-        lineStyle: { width: 4, color: "#00ff88", shadowBlur: 20, shadowColor: 'rgba(0, 255, 136, 0.5)' },
+        lineStyle: {
+          width: 4,
+          color: "#00ff88",
+          shadowBlur: 20,
+          shadowColor: "rgba(0, 255, 136, 0.5)",
+        },
         areaStyle: {
           opacity: 0.05,
           color: {
             type: "linear",
-            x: 0, y: 0, x2: 0, y2: 1,
+            x: 0,
+            y: 0,
+            x2: 0,
+            y2: 1,
             colorStops: [
               { offset: 0, color: "#00ff88" },
               { offset: 1, color: "transparent" },
@@ -414,19 +534,29 @@ function formatUptime(ms: number): string {
   const h = Math.floor(seconds / 3600);
   const m = Math.floor((seconds % 3600) / 60);
   const s = seconds % 60;
-  return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+  return `${h.toString().padStart(2, "0")}:${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
 }
 
 async function refresh() {
   loading.value = true;
   try {
     const data = await api.getOverview();
-    const now = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    const now = new Date().toLocaleTimeString([], {
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    });
     const lastMetrics = overview.value?.metrics;
-    
+
     if (lastMetrics) {
-      const pubSec = Math.max(0, data.metrics.messages_published - lastMetrics.messages_published);
-      const conSec = Math.max(0, data.metrics.messages_consumed - lastMetrics.messages_consumed);
+      const pubSec = Math.max(
+        0,
+        data.metrics.messages_published - lastMetrics.messages_published,
+      );
+      const conSec = Math.max(
+        0,
+        data.metrics.messages_consumed - lastMetrics.messages_consumed,
+      );
       history.value.push({ time: now, published: pubSec, consumed: conSec });
       if (history.value.length > MAX_HISTORY) history.value.shift();
     }
@@ -479,14 +609,14 @@ onMounted(refresh);
     align-items: center;
     justify-content: center;
     position: relative;
-    
+
     .icon-glow {
       position: absolute;
       width: 100%;
       height: 100%;
       background: var(--accent-color);
-      filter: blur(15px);
-      opacity: 0.2;
+      filter: blur(20px);
+      opacity: 0.05;
       z-index: 0;
     }
 
@@ -518,9 +648,9 @@ onMounted(refresh);
   background: var(--secondary);
   border-radius: 50%;
   position: relative;
-  
+
   &::before {
-    content: '';
+    content: "";
     position: absolute;
     width: 100%;
     height: 100%;

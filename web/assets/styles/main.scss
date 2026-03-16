@@ -1,18 +1,19 @@
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap');
 
 :root {
-  --bg-primary: #0a0a0c;
-  --bg-secondary: #121217;
-  --surface-1: rgba(255, 255, 255, 0.03);
-  --surface-2: rgba(255, 255, 255, 0.05);
-  --glass-bg: rgba(18, 18, 23, 0.7);
-  --glass-border: rgba(255, 255, 255, 0.08);
-  --primary: #00f2ff;
-  --secondary: #00ff88;
-  --accent: #bf00ff;
-  --text-primary: #f8f9fa;
-  --text-secondary: #9ea3ae;
-  --text-muted: #626771;
+  --bg-primary: #0f0f12; // Brighter uniform background
+  --bg-secondary: #141418; 
+  --bg-accent: #1c1c21;
+  --surface-1: rgba(255, 255, 255, 0.05);
+  --surface-2: rgba(255, 255, 255, 0.08);
+  --glass-bg: rgba(30, 30, 35, 0.88); 
+  --glass-border: rgba(255, 255, 255, 0.15); 
+  --primary: #22d3ee;
+  --secondary: #34d399;
+  --accent: #38bdf8;
+  --text-primary: #ffffff;
+  --text-secondary: #e4e4e7;
+  --text-muted: #a1a1aa;
 }
 
 html, body {
@@ -21,8 +22,8 @@ html, body {
   font-family: 'Inter', system-ui, -apple-system, sans-serif;
   background-color: var(--bg-primary);
   background-image: 
-    radial-gradient(circle at 0% 0%, rgba(0, 242, 255, 0.03) 0%, transparent 50%),
-    radial-gradient(circle at 100% 100%, rgba(191, 0, 255, 0.03) 0%, transparent 50%);
+    radial-gradient(at 0% 0%, rgba(34, 211, 238, 0.05) 0px, transparent 50%),
+    radial-gradient(at 100% 0%, rgba(167, 139, 250, 0.05) 0px, transparent 50%);
   background-attachment: fixed;
   color: var(--text-primary);
   -webkit-font-smoothing: antialiased;
@@ -30,17 +31,21 @@ html, body {
 
 .glass-card {
   background: var(--glass-bg);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(16px) saturate(180%);
+  -webkit-backdrop-filter: blur(16px) saturate(180%);
   border: 1px solid var(--glass-border);
-  border-radius: 16px;
-  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.3);
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  border-radius: 12px;
+  box-shadow: 
+    0 4px 6px -1px rgba(0, 0, 0, 0.1),
+    0 2px 4px -1px rgba(0, 0, 0, 0.06),
+    inset 0 1px 1px 0 rgba(255, 255, 255, 0.05);
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
 
   &:hover {
     border-color: rgba(255, 255, 255, 0.15);
-    background: rgba(255, 255, 255, 0.01);
+    background: rgba(255, 255, 255, 0.02);
     transform: translateY(-2px);
+    box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1);
   }
 }
 
@@ -57,14 +62,12 @@ html, body {
     }
 
     &--active {
-      background: linear-gradient(90deg, rgba(0, 242, 255, 0.1) 0%, transparent 100%) !important;
-      border-left: 3px solid var(--primary);
-      border-top-left-radius: 0;
-      border-bottom-left-radius: 0;
-
+      background: var(--surface-1) !important;
+      border: 1px solid var(--glass-border);
+      
       .v-list-item-title {
-        color: var(--primary) !important;
-        font-weight: 700;
+        color: #fff !important;
+        font-weight: 600;
       }
       .v-icon {
         color: var(--primary) !important;
@@ -120,8 +123,8 @@ html, body {
   font-family: 'Inter', sans-serif;
   font-size: 2.25rem;
   font-weight: 800;
-  letter-spacing: -0.03em;
-  background: linear-gradient(180deg, #fff 0%, #a5a5a5 100%);
+  letter-spacing: -0.01em;
+  background: linear-gradient(180deg, #fff 40%, rgba(255, 255, 255, 0.6) 100%);
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
