@@ -1,54 +1,62 @@
 <template>
-  <div>
-    <div class="d-flex align-center mb-6">
+  <div class="premium-dashboard">
+    <header class="dashboard-header d-flex align-center mb-10">
       <div>
-        <h1 class="text-h4 font-weight-bold">Cluster</h1>
-        <p class="text-body-2 mt-1" style="opacity: 0.5">Raft cluster management</p>
+        <h1 class="text-h4 font-weight-black gradient-text-primary mb-1">Cluster Management</h1>
+        <div class="text-caption text-muted font-weight-bold letter-spacing-1">RAFT CONSENSUS AND TOPOLOGY</div>
       </div>
       <v-spacer />
-      <v-btn icon="mdi-refresh" variant="text" size="small" :loading="loading" @click="refresh" />
-    </div>
+      <v-btn
+        variant="tonal"
+        color="info"
+        rounded="lg"
+        prepend-icon="mdi-refresh"
+        :loading="loading"
+        @click="refresh"
+      >
+        REFRESH
+      </v-btn>
+    </header>
 
-    <!-- Cluster disabled -->
-    <v-card v-if="!clusterEnabled" class="data-table-card pa-8 text-center" color="surface">
+    <div v-if="!clusterEnabled" class="glass-card pa-12 text-center">
       <v-icon size="64" class="mb-4" style="opacity: 0.2">mdi-server-network-off</v-icon>
-      <h3 class="text-h6 mb-2">Cluster Mode Disabled</h3>
-      <p class="text-body-2" style="opacity: 0.5">
-        Enable clustering in the config file to use Raft-based quorum queues.
+      <h3 class="text-h5 font-weight-bold mb-2">Cluster Mode Disabled</h3>
+      <p class="text-body-2 text-muted mb-4">
+        Enable clustering in the configuration to utilize Raft-based durable quorum queues.
       </p>
-      <v-chip color="grey" size="small" variant="flat" class="mt-2">
-        cluster.enabled = false
-      </v-chip>
-    </v-card>
+      <div class="d-inline-flex pa-2 px-4 bg-surface-subtle rounded-pill mono text-caption text-muted">
+        cluster.enabled: false
+      </div>
+    </div>
 
     <!-- Cluster enabled -->
     <template v-else>
       <v-row class="mb-4">
         <v-col cols="12" sm="6" md="3">
-          <v-card class="metric-card pa-4" color="surface">
-            <div class="metric-label mb-2">State</div>
-            <v-chip :color="stateColor" variant="flat" size="small">
-              {{ cluster?.state || 'Unknown' }}
+          <div class="glass-card pa-5">
+            <div class="metric-label mb-2">OPERATIONAL STATE</div>
+            <v-chip :color="stateColor" variant="flat" size="small" class="font-weight-black px-4">
+              {{ cluster?.state || 'UNKNOWN' }}
             </v-chip>
-          </v-card>
+          </div>
         </v-col>
         <v-col cols="12" sm="6" md="3">
-          <v-card class="metric-card pa-4" color="surface">
-            <div class="metric-label mb-2">Node ID</div>
-            <div class="mono text-body-1">{{ cluster?.node_id }}</div>
-          </v-card>
+          <div class="glass-card pa-5">
+            <div class="metric-label mb-2">LOCAL NODE IDENTIFIER</div>
+            <div class="mono text-body-1 font-weight-bold text-primary">{{ cluster?.node_id }}</div>
+          </div>
         </v-col>
         <v-col cols="12" sm="6" md="3">
-          <v-card class="metric-card pa-4" color="surface">
-            <div class="metric-label mb-2">Term</div>
-            <div class="mono text-h5 font-weight-bold">{{ cluster?.term || 0 }}</div>
-          </v-card>
+          <div class="glass-card pa-5">
+            <div class="metric-label mb-2">CURRENT TERM</div>
+            <div class="text-h5 font-weight-black gradient-text-primary">{{ cluster?.term || 0 }}</div>
+          </div>
         </v-col>
         <v-col cols="12" sm="6" md="3">
-          <v-card class="metric-card pa-4" color="surface">
-            <div class="metric-label mb-2">Last Index</div>
-            <div class="mono text-h5 font-weight-bold">{{ cluster?.last_index || 0 }}</div>
-          </v-card>
+          <div class="glass-card pa-5">
+            <div class="metric-label mb-2">COMMIT INDEX</div>
+            <div class="text-h5 font-weight-black gradient-text-primary">{{ cluster?.last_index || 0 }}</div>
+          </div>
         </v-col>
       </v-row>
 

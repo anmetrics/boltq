@@ -1,16 +1,26 @@
 <template>
-  <div>
-    <div class="d-flex align-center mb-6">
+  <div class="premium-dashboard">
+    <header class="dashboard-header d-flex align-center mb-10">
       <div>
-        <h1 class="text-h4 font-weight-bold">Work Queues</h1>
-        <p class="text-body-2 mt-1" style="opacity: 0.5">Manage message queues</p>
+        <h1 class="text-h4 font-weight-black gradient-text-primary mb-1">Queue Management</h1>
+        <div class="text-caption text-muted font-weight-bold letter-spacing-1">MONITORING WORKLOAD AND PERFORMANCE</div>
       </div>
       <v-spacer />
-      <v-btn icon="mdi-refresh" variant="text" size="small" :loading="loading" @click="refresh" />
-    </div>
+      <v-btn
+        variant="tonal"
+        color="primary"
+        rounded="lg"
+        prepend-icon="mdi-refresh"
+        :loading="loading"
+        @click="refresh"
+      >
+        REFRESH
+      </v-btn>
+    </header>
 
-    <v-card class="data-table-card" color="surface">
-      <v-table hover>
+    <div class="glass-card table-glass pa-0">
+
+<v-table class="premium-table">
         <thead>
           <tr>
             <th>Queue Name</th>
@@ -56,17 +66,17 @@
           </tr>
         </tbody>
       </v-table>
-      <div class="pa-4 d-flex align-center" style="border-top: 1px solid rgba(255,255,255,0.06)">
-        <v-icon size="16" class="mr-2" style="opacity: 0.4">mdi-clock-outline</v-icon>
-        <span class="text-caption" style="opacity: 0.4">
-          Pending ACKs: {{ stats?.PendingCount || 0 }}
+      <div class="pa-4 d-flex align-center px-6" style="border-top: 1px solid var(--glass-border)">
+        <v-icon size="16" class="mr-2 text-muted">mdi-clock-outline</v-icon>
+        <span class="text-caption text-muted font-weight-bold">
+          PENDING ACKS: {{ stats?.PendingCount || 0 }}
         </span>
         <v-spacer />
-        <span class="text-caption" style="opacity: 0.4">
-          Total queues: {{ rows.length }}
+        <span class="text-caption text-muted font-weight-bold">
+          TOTAL ACTIVE: {{ rows.length }}
         </span>
       </div>
-    </v-card>
+    </div>
 
     <!-- Purge confirmation dialog -->
     <v-dialog v-model="purgeDialog" max-width="400">

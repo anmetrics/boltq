@@ -1,32 +1,48 @@
 <template>
-  <div>
-    <div class="d-flex align-center mb-6">
+  <div class="premium-dashboard">
+    <header class="dashboard-header d-flex align-center mb-10">
       <div>
-        <h1 class="text-h4 font-weight-bold">Metrics</h1>
-        <p class="text-body-2 mt-1" style="opacity: 0.5">Real-time server metrics</p>
+        <h1 class="text-h4 font-weight-black gradient-text-primary mb-1">System Telemetry</h1>
+        <div class="text-caption text-muted font-weight-bold letter-spacing-1">LOW-LEVEL PERFORMANCE ANALYTICS</div>
       </div>
       <v-spacer />
-      <v-chip size="small" :color="autoRefresh ? 'primary' : 'default'" variant="flat" class="mr-2" @click="autoRefresh = !autoRefresh">
-        <v-icon size="14" class="mr-1">mdi-autorenew</v-icon>
-        Auto-refresh {{ autoRefresh ? 'ON' : 'OFF' }}
-      </v-chip>
-      <v-btn icon="mdi-refresh" variant="text" size="small" :loading="loading" @click="refresh" />
-    </div>
+      <div class="d-flex align-center">
+        <v-chip 
+          size="small" 
+          :color="autoRefresh ? 'primary' : 'muted'" 
+          variant="tonal" 
+          class="mr-4 px-4 font-weight-bold" 
+          @click="autoRefresh = !autoRefresh"
+        >
+          {{ autoRefresh ? 'LIVE UPDATES ON' : 'PAUSED' }}
+        </v-chip>
+        <v-btn
+          variant="tonal"
+          color="amber"
+          rounded="lg"
+          prepend-icon="mdi-refresh"
+          :loading="loading"
+          @click="refresh"
+        >
+          REFRESH
+        </v-btn>
+      </div>
+    </header>
 
     <v-row>
       <v-col v-for="m in metricItems" :key="m.key" cols="12" sm="6" md="4" lg="3">
-        <v-card class="metric-card pa-4" color="surface">
-          <div class="d-flex align-center mb-3">
-            <v-icon :color="m.color" size="20" class="mr-2">{{ m.icon }}</v-icon>
-            <span class="metric-label" style="opacity: 0.7">{{ m.label }}</span>
+        <div class="glass-card pa-6">
+          <div class="d-flex align-center justify-space-between mb-4">
+            <span class="metric-label">{{ m.label }}</span>
+            <v-icon :color="m.color" size="18">{{ m.icon }}</v-icon>
           </div>
-          <div class="metric-value" :style="{ color: m.color, fontSize: '1.8rem' }">
+          <div class="metric-value" :style="{ fontSize: '1.8rem' }">
             {{ formatNumber(metrics[m.key] || 0) }}
           </div>
-          <div v-if="m.description" class="text-caption mt-2" style="opacity: 0.35">
+          <div v-if="m.description" class="text-caption mt-4 text-muted font-weight-medium">
             {{ m.description }}
           </div>
-        </v-card>
+        </div>
       </v-col>
     </v-row>
 

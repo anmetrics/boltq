@@ -1,16 +1,26 @@
 <template>
-  <div class="obsidian-page">
-    <div class="d-flex align-center mb-8">
+  <div class="premium-dashboard">
+    <header class="dashboard-header d-flex align-center mb-10">
       <div>
-        <h1 class="text-h4 font-weight-black gradient-text">Global Topics</h1>
-        <p class="text-caption text-grey mt-1">Active pub/sub channels and broadcast fan-out</p>
+        <h1 class="text-h4 font-weight-black gradient-text-primary mb-1">Global Topics</h1>
+        <div class="text-caption text-muted font-weight-bold letter-spacing-1">REAL-TIME BROADCAST CHANNELS</div>
       </div>
       <v-spacer />
-      <v-btn icon="mdi-refresh" variant="text" size="small" :loading="loading" @click="refresh" class="neon-btn" />
-    </div>
+      <v-btn
+        variant="tonal"
+        color="secondary"
+        rounded="lg"
+        prepend-icon="mdi-refresh"
+        :loading="loading"
+        @click="refresh"
+      >
+        REFRESH
+      </v-btn>
+    </header>
 
-    <div class="glass-card table-card overflow-hidden">
-      <v-table density="compact" class="obsidian-table">
+    <div class="glass-card table-glass pa-0">
+
+      <v-table class="premium-table">
         <thead>
           <tr>
             <th class="text-left">Topic Name</th>
@@ -49,9 +59,9 @@
           </tr>
         </tbody>
       </v-table>
-      <div class="footer-stats d-flex align-center px-4 py-3">
-        <v-icon size="14" class="mr-2 text-grey">mdi-information-outline</v-icon>
-        <span class="text-caption text-grey">Discovered Topics: {{ rows.length }}</span>
+      <div class="footer-stats d-flex align-center px-6 py-3" style="border-top: 1px solid var(--glass-border)">
+        <v-icon size="14" class="mr-2 text-muted">mdi-information-outline</v-icon>
+        <span class="text-caption text-muted font-weight-bold">DISCOVERED TOPICS: {{ rows.length }}</span>
       </div>
     </div>
   </div>
