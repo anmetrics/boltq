@@ -1,88 +1,88 @@
 <template>
-  <div class="premium-dashboard">
-    <header class="dashboard-header d-flex align-center mb-10">
+  <div>
+    <header class="page-header">
       <div>
-        <h1 class="text-h4 font-weight-black gradient-text-primary mb-1">Cluster Management</h1>
-        <div class="text-caption text-muted font-weight-bold letter-spacing-1">RAFT CONSENSUS AND TOPOLOGY</div>
+        <h1 class="page-title">Cluster</h1>
+        <p class="page-subtitle">Raft consensus and node topology</p>
       </div>
-      <v-spacer />
       <v-btn
-        variant="tonal"
-        color="info"
+        variant="outlined"
+        color="primary"
         rounded="lg"
+        size="small"
         prepend-icon="mdi-refresh"
         :loading="loading"
         @click="refresh"
       >
-        REFRESH
+        Refresh
       </v-btn>
     </header>
 
-    <div v-if="!clusterEnabled" class="glass-card pa-12 text-center">
-      <v-icon size="64" class="mb-4" style="opacity: 0.2">mdi-server-network-off</v-icon>
-      <h3 class="text-h5 font-weight-bold mb-2">Cluster Mode Disabled</h3>
-      <p class="text-body-2 text-muted mb-4">
+    <!-- Cluster disabled -->
+    <div v-if="!clusterEnabled" class="modern-card pa-12 text-center">
+      <v-icon size="48" color="grey-lighten-1" class="mb-4">mdi-server-network-off</v-icon>
+      <h3 class="text-h6 font-weight-bold mb-2">Cluster Mode Disabled</h3>
+      <p class="text-body-2 text-medium-emphasis mb-4">
         Enable clustering in the configuration to utilize Raft-based durable quorum queues.
       </p>
-      <div class="d-inline-flex pa-2 px-4 bg-surface-subtle rounded-pill mono text-caption text-muted">
-        cluster.enabled: false
-      </div>
+      <code class="config-badge">cluster.enabled: false</code>
     </div>
 
     <!-- Cluster enabled -->
     <template v-else>
+      <!-- Stats cards -->
       <v-row class="mb-4">
         <v-col cols="12" sm="6" md="3">
-          <div class="glass-card pa-5">
-            <div class="metric-label mb-2">OPERATIONAL STATE</div>
-            <v-chip :color="stateColor" variant="flat" size="small" class="font-weight-black px-4">
-              {{ cluster?.state || 'UNKNOWN' }}
+          <div class="modern-card pa-5">
+            <div class="metric-label mb-2">State</div>
+            <v-chip :color="stateColor" variant="tonal" size="small" class="font-weight-bold">
+              {{ cluster?.state || 'Unknown' }}
             </v-chip>
           </div>
         </v-col>
         <v-col cols="12" sm="6" md="3">
-          <div class="glass-card pa-5">
-            <div class="metric-label mb-2">LOCAL NODE IDENTIFIER</div>
-            <div class="mono text-body-1 font-weight-bold text-primary">{{ cluster?.node_id }}</div>
+          <div class="modern-card pa-5">
+            <div class="metric-label mb-2">Node ID</div>
+            <div class="mono text-body-1 font-weight-bold" style="color: var(--primary)">{{ cluster?.node_id }}</div>
           </div>
         </v-col>
         <v-col cols="12" sm="6" md="3">
-          <div class="glass-card pa-5">
-            <div class="metric-label mb-2">CURRENT TERM</div>
-            <div class="text-h5 font-weight-black gradient-text-primary">{{ cluster?.term || 0 }}</div>
+          <div class="modern-card pa-5">
+            <div class="metric-label mb-2">Current Term</div>
+            <div class="metric-value" style="font-size: 1.5rem">{{ cluster?.term || 0 }}</div>
           </div>
         </v-col>
         <v-col cols="12" sm="6" md="3">
-          <div class="glass-card pa-5">
-            <div class="metric-label mb-2">COMMIT INDEX</div>
-            <div class="text-h5 font-weight-black gradient-text-primary">{{ cluster?.last_index || 0 }}</div>
+          <div class="modern-card pa-5">
+            <div class="metric-label mb-2">Commit Index</div>
+            <div class="metric-value" style="font-size: 1.5rem">{{ cluster?.last_index || 0 }}</div>
           </div>
         </v-col>
       </v-row>
 
-      <!-- Leader info -->
-      <v-card class="data-table-card mb-4" color="surface">
-        <v-card-title class="text-body-1 font-weight-bold pa-4 pb-2">
-          <v-icon size="18" class="mr-2">mdi-crown</v-icon>
-          Leader
-        </v-card-title>
-        <v-card-text>
-          <div class="d-flex align-center">
-            <v-chip color="success" size="small" variant="flat" class="mr-3">
-              {{ cluster?.leader_id }}
-            </v-chip>
-            <span class="mono text-body-2" style="opacity: 0.5">{{ cluster?.leader }}</span>
-          </div>
-        </v-card-text>
-      </v-card>
+      <!-- Leader -->
+      <div class="modern-card pa-5 mb-4">
+        <div class="d-flex align-center mb-3">
+          <v-icon size="18" color="warning" class="mr-2">mdi-crown</v-icon>
+          <span class="card-title">Leader</span>
+        </div>
+        <div class="d-flex align-center ga-3">
+          <v-chip color="success" size="small" variant="tonal" class="font-weight-bold">
+            {{ cluster?.leader_id }}
+          </v-chip>
+          <span class="mono text-body-2 text-medium-emphasis">{{ cluster?.leader }}</span>
+        </div>
+      </div>
 
       <!-- Peers -->
-      <v-card class="data-table-card mb-4" color="surface">
-        <v-card-title class="text-body-1 font-weight-bold pa-4 pb-2">
-          <v-icon size="18" class="mr-2">mdi-lan</v-icon>
-          Peers ({{ cluster?.peers?.length || 0 }})
-        </v-card-title>
-        <v-table density="compact" hover>
+      <div class="modern-card-flat mb-4">
+        <div class="pa-5 pb-3">
+          <div class="d-flex align-center">
+            <v-icon size="18" color="info" class="mr-2">mdi-lan</v-icon>
+            <span class="card-title">Peers ({{ cluster?.peers?.length || 0 }})</span>
+          </div>
+        </div>
+        <v-table class="premium-table" density="compact">
           <thead>
             <tr>
               <th>Node</th>
@@ -92,13 +92,14 @@
           </thead>
           <tbody>
             <tr v-for="peer in parsedPeers" :key="peer.raw">
-              <td class="mono">{{ peer.id }}</td>
-              <td class="mono" style="opacity: 0.5">{{ peer.addr }}</td>
+              <td class="mono font-weight-medium">{{ peer.id }}</td>
+              <td class="mono text-medium-emphasis">{{ peer.addr }}</td>
               <td>
                 <v-chip
                   :color="peer.id === cluster?.leader_id ? 'success' : 'default'"
                   size="x-small"
-                  variant="flat"
+                  variant="tonal"
+                  class="font-weight-bold"
                 >
                   {{ peer.id === cluster?.leader_id ? 'Leader' : 'Follower' }}
                 </v-chip>
@@ -106,78 +107,70 @@
             </tr>
           </tbody>
         </v-table>
-      </v-card>
+      </div>
 
       <!-- Join / Leave -->
       <v-row>
         <v-col cols="12" md="6">
-          <v-card class="data-table-card" color="surface">
-            <v-card-title class="text-body-1 font-weight-bold pa-4 pb-2">
-              <v-icon size="18" class="mr-2">mdi-plus-network</v-icon>
-              Join Node
-            </v-card-title>
-            <v-card-text>
-              <v-text-field
-                v-model="joinNodeId"
-                label="Node ID"
-                placeholder="node4"
-                variant="outlined"
-                density="compact"
-                class="mb-2"
-              />
-              <v-text-field
-                v-model="joinAddr"
-                label="Raft Address"
-                placeholder="10.0.0.4:9100"
-                variant="outlined"
-                density="compact"
-                class="mb-2"
-              />
-              <v-btn
-                color="primary"
-                variant="flat"
-                block
-                :loading="joining"
-                :disabled="!joinNodeId || !joinAddr"
-                @click="joinNode"
-              >
-                Join Cluster
-              </v-btn>
-            </v-card-text>
-          </v-card>
+          <div class="modern-card pa-5">
+            <div class="d-flex align-center mb-4">
+              <v-icon size="18" color="success" class="mr-2">mdi-plus-network</v-icon>
+              <span class="card-title">Join Node</span>
+            </div>
+            <v-text-field
+              v-model="joinNodeId"
+              label="Node ID"
+              placeholder="node4"
+              class="mb-2"
+            />
+            <v-text-field
+              v-model="joinAddr"
+              label="Raft Address"
+              placeholder="10.0.0.4:9100"
+              class="mb-3"
+            />
+            <v-btn
+              color="primary"
+              variant="flat"
+              rounded="lg"
+              block
+              :loading="joining"
+              :disabled="!joinNodeId || !joinAddr"
+              @click="joinNode"
+            >
+              Join Cluster
+            </v-btn>
+          </div>
         </v-col>
         <v-col cols="12" md="6">
-          <v-card class="data-table-card" color="surface">
-            <v-card-title class="text-body-1 font-weight-bold pa-4 pb-2">
-              <v-icon size="18" class="mr-2">mdi-minus-network</v-icon>
-              Remove Node
-            </v-card-title>
-            <v-card-text>
-              <v-text-field
-                v-model="leaveNodeId"
-                label="Node ID"
-                placeholder="node4"
-                variant="outlined"
-                density="compact"
-                class="mb-2"
-              />
-              <v-btn
-                color="error"
-                variant="flat"
-                block
-                :loading="leaving"
-                :disabled="!leaveNodeId"
-                @click="leaveNode"
-              >
-                Remove from Cluster
-              </v-btn>
-            </v-card-text>
-          </v-card>
+          <div class="modern-card pa-5">
+            <div class="d-flex align-center mb-4">
+              <v-icon size="18" color="error" class="mr-2">mdi-minus-network</v-icon>
+              <span class="card-title">Remove Node</span>
+            </div>
+            <v-text-field
+              v-model="leaveNodeId"
+              label="Node ID"
+              placeholder="node4"
+              class="mb-3"
+            />
+            <v-btn
+              color="error"
+              variant="flat"
+              rounded="lg"
+              block
+              :loading="leaving"
+              :disabled="!leaveNodeId"
+              @click="leaveNode"
+            >
+              Remove from Cluster
+            </v-btn>
+          </div>
         </v-col>
       </v-row>
     </template>
 
-    <v-snackbar v-model="snackbar" :color="snackColor" timeout="3000">
+    <v-snackbar v-model="snackbar" :color="snackColor" timeout="3000" rounded="lg">
       {{ snackMessage }}
     </v-snackbar>
   </div>
@@ -261,3 +254,39 @@ let timer: ReturnType<typeof setInterval>
 onMounted(() => { refresh(); timer = setInterval(refresh, 5000) })
 onUnmounted(() => clearInterval(timer))
 </script>
+
+<style lang="scss" scoped>
+.page-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-bottom: 24px;
+}
+.page-title {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  letter-spacing: -0.02em;
+}
+.page-subtitle {
+  font-size: 0.875rem;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+.card-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.config-badge {
+  display: inline-block;
+  padding: 6px 16px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+.ga-3 { gap: 12px; }
+</style>

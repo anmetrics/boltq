@@ -1,26 +1,25 @@
 <template>
-  <div class="premium-dashboard">
-    <header class="dashboard-header d-flex align-center mb-10">
+  <div>
+    <header class="page-header">
       <div>
-        <h1 class="text-h4 font-weight-black gradient-text-primary mb-1">Queue Management</h1>
-        <div class="text-caption text-muted font-weight-bold letter-spacing-1">MONITORING WORKLOAD AND PERFORMANCE</div>
+        <h1 class="page-title">Queues</h1>
+        <p class="page-subtitle">Monitor and manage message queues</p>
       </div>
-      <v-spacer />
       <v-btn
-        variant="tonal"
+        variant="outlined"
         color="primary"
         rounded="lg"
+        size="small"
         prepend-icon="mdi-refresh"
         :loading="loading"
         @click="refresh"
       >
-        REFRESH
+        Refresh
       </v-btn>
     </header>
 
-    <div class="glass-card table-glass pa-0">
-
-<v-table class="premium-table">
+    <div class="modern-card-flat">
+      <v-table class="premium-table">
         <thead>
           <tr>
             <th>Queue Name</th>
@@ -31,32 +30,36 @@
         </thead>
         <tbody>
           <tr v-if="rows.length === 0">
-            <td colspan="4" class="text-center pa-8" style="opacity: 0.4">
-              <v-icon size="48" class="mb-2" style="opacity: 0.3">mdi-tray-remove</v-icon>
-              <div>No queues created yet</div>
-              <div class="text-caption mt-1">Publish a message via TCP to create a queue</div>
+            <td colspan="4" class="text-center pa-10">
+              <v-icon size="40" color="grey-lighten-1" class="mb-3">mdi-tray-remove</v-icon>
+              <div class="text-body-2 text-medium-emphasis">No queues created yet</div>
+              <div class="text-caption text-medium-emphasis mt-1">Publish a message via TCP to create a queue</div>
             </td>
           </tr>
           <tr v-for="q in rows" :key="q.name">
             <td>
-              <span class="mono font-weight-medium">{{ q.name }}</span>
+              <div class="d-flex align-center">
+                <v-icon size="16" color="primary" class="mr-2" style="opacity: 0.5">mdi-tray-full</v-icon>
+                <span class="mono font-weight-medium">{{ q.name }}</span>
+              </div>
             </td>
             <td class="text-right">
-              <v-chip :color="q.messages > 0 ? 'primary' : 'default'" size="small" variant="flat">
+              <v-chip :color="q.messages > 0 ? 'primary' : 'default'" size="small" variant="tonal" class="font-weight-bold">
                 {{ q.messages.toLocaleString() }}
               </v-chip>
             </td>
             <td class="text-right">
-              <v-chip v-if="q.deadLetters > 0" color="error" size="small" variant="flat">
+              <v-chip v-if="q.deadLetters > 0" color="error" size="small" variant="tonal" class="font-weight-bold">
                 {{ q.deadLetters.toLocaleString() }}
               </v-chip>
-              <span v-else class="mono" style="opacity: 0.3">0</span>
+              <span v-else class="text-medium-emphasis">0</span>
             </td>
             <td class="text-right">
               <v-btn
                 size="x-small"
                 variant="tonal"
                 color="warning"
+                rounded="lg"
                 :disabled="q.messages === 0"
                 @click="purge(q.name)"
               >
@@ -66,36 +69,36 @@
           </tr>
         </tbody>
       </v-table>
-      <div class="pa-4 d-flex align-center px-6" style="border-top: 1px solid var(--glass-border)">
-        <v-icon size="16" class="mr-2 text-muted">mdi-clock-outline</v-icon>
-        <span class="text-caption text-muted font-weight-bold">
-          PENDING ACKS: {{ stats?.PendingCount || 0 }}
-        </span>
-        <v-spacer />
-        <span class="text-caption text-muted font-weight-bold">
-          TOTAL ACTIVE: {{ rows.length }}
+      <div class="table-footer">
+        <div class="d-flex align-center">
+          <v-icon size="14" class="mr-2 text-medium-emphasis">mdi-clock-outline</v-icon>
+          <span class="text-caption text-medium-emphasis font-weight-medium">
+            Pending Acks: {{ stats?.PendingCount || 0 }}
+          </span>
+        </div>
+        <span class="text-caption text-medium-emphasis font-weight-medium">
+          Total: {{ rows.length }} queues
         </span>
       </div>
     </div>
 
-    <!-- Purge confirmation dialog -->
-    <v-dialog v-model="purgeDialog" max-width="400">
-      <v-card color="surface">
-        <v-card-title>Purge Queue</v-card-title>
-        <v-card-text>
+    <v-dialog v-model="purgeDialog" max-width="420">
+      <v-card rounded="xl">
+        <v-card-title class="text-body-1 font-weight-bold pt-5">Purge Queue</v-card-title>
+        <v-card-text class="text-body-2">
           Are you sure you want to purge all messages from
           <strong class="mono">{{ purgeTarget }}</strong>?
           This action cannot be undone.
         </v-card-text>
-        <v-card-actions>
+        <v-card-actions class="pa-4 pt-0">
           <v-spacer />
           <v-btn variant="text" @click="purgeDialog = false">Cancel</v-btn>
-          <v-btn color="warning" variant="flat" :loading="purging" @click="confirmPurge">Purge</v-btn>
+          <v-btn color="warning" variant="flat" rounded="lg" :loading="purging" @click="confirmPurge">Purge</v-btn>
         </v-card-actions>
       </v-card>
     </v-dialog>
 
-    <v-snackbar v-model="snackbar" :color="snackColor" timeout="3000">
+    <v-snackbar v-model="snackbar" :color="snackColor" timeout="3000" rounded="lg">
       {{ snackMessage }}
     </v-snackbar>
   </div>
@@ -147,9 +150,7 @@ async function confirmPurge() {
 
 async function refresh() {
   loading.value = true
-  try {
-    stats.value = await api.getStats()
-  } catch {}
+  try { stats.value = await api.getStats() } catch {}
   loading.value = false
 }
 
@@ -157,3 +158,30 @@ let timer: ReturnType<typeof setInterval>
 onMounted(() => { refresh(); timer = setInterval(refresh, 5000) })
 onUnmounted(() => clearInterval(timer))
 </script>
+
+<style lang="scss" scoped>
+.page-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-bottom: 24px;
+}
+.page-title {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  letter-spacing: -0.02em;
+}
+.page-subtitle {
+  font-size: 0.875rem;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+.table-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-top: 1px solid var(--border-color);
+}
+</style>

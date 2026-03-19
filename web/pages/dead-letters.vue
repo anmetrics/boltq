@@ -1,16 +1,25 @@
 <template>
   <div>
-    <div class="d-flex align-center mb-6">
+    <header class="page-header">
       <div>
-        <h1 class="text-h4 font-weight-bold">Dead Letter Queues</h1>
-        <p class="text-body-2 mt-1" style="opacity: 0.5">Messages that exceeded max retry attempts</p>
+        <h1 class="page-title">Dead Letters</h1>
+        <p class="page-subtitle">Messages that exceeded max retry attempts</p>
       </div>
-      <v-spacer />
-      <v-btn icon="mdi-refresh" variant="text" size="small" :loading="loading" @click="refresh" />
-    </div>
+      <v-btn
+        variant="outlined"
+        color="primary"
+        rounded="lg"
+        size="small"
+        prepend-icon="mdi-refresh"
+        :loading="loading"
+        @click="refresh"
+      >
+        Refresh
+      </v-btn>
+    </header>
 
-    <v-card class="data-table-card" color="surface">
-      <v-table hover>
+    <div class="modern-card-flat">
+      <v-table class="premium-table">
         <thead>
           <tr>
             <th>Dead Letter Queue</th>
@@ -21,22 +30,24 @@
         </thead>
         <tbody>
           <tr v-if="rows.length === 0">
-            <td colspan="4" class="text-center pa-8" style="opacity: 0.4">
-              <v-icon size="48" class="mb-2" color="success" style="opacity: 0.5">mdi-check-circle</v-icon>
-              <div>No dead letters</div>
-              <div class="text-caption mt-1">All messages are being processed successfully</div>
+            <td colspan="4" class="text-center pa-10">
+              <v-icon size="40" color="success" class="mb-3" style="opacity: 0.4">mdi-check-circle</v-icon>
+              <div class="text-body-2 text-medium-emphasis">No dead letters</div>
+              <div class="text-caption text-medium-emphasis mt-1">All messages are being processed successfully</div>
             </td>
           </tr>
           <tr v-for="dl in rows" :key="dl.name">
             <td>
-              <v-icon size="16" color="error" class="mr-1">mdi-email-alert</v-icon>
-              <span class="mono font-weight-medium">{{ dl.name }}</span>
+              <div class="d-flex align-center">
+                <v-icon size="16" color="error" class="mr-2" style="opacity: 0.5">mdi-email-alert</v-icon>
+                <span class="mono font-weight-medium">{{ dl.name }}</span>
+              </div>
             </td>
             <td>
-              <span class="mono" style="opacity: 0.5">{{ dl.sourceQueue }}</span>
+              <span class="mono text-medium-emphasis">{{ dl.sourceQueue }}</span>
             </td>
             <td class="text-right">
-              <v-chip color="error" size="small" variant="flat">
+              <v-chip color="error" size="small" variant="tonal" class="font-weight-bold">
                 {{ dl.count.toLocaleString() }}
               </v-chip>
             </td>
@@ -45,6 +56,7 @@
                 size="x-small"
                 variant="tonal"
                 color="error"
+                rounded="lg"
                 :disabled="dl.count === 0"
                 @click="purge(dl.sourceQueue)"
               >
@@ -54,27 +66,29 @@
           </tr>
         </tbody>
       </v-table>
-      <div class="pa-4 text-caption" style="opacity: 0.3; border-top: 1px solid rgba(255,255,255,0.06)">
-        Total dead letter messages: {{ totalDead }}
+      <div class="table-footer">
+        <span class="text-caption text-medium-emphasis font-weight-medium">
+          Total dead letter messages: {{ totalDead }}
+        </span>
       </div>
-    </v-card>
+    </div>
 
-    <v-dialog v-model="purgeDialog" max-width="400">
-      <v-card color="surface">
-        <v-card-title>Purge Dead Letters</v-card-title>
-        <v-card-text>
+    <v-dialog v-model="purgeDialog" max-width="420">
+      <v-card rounded="xl">
+        <v-card-title class="text-body-1 font-weight-bold pt-5">Purge Dead Letters</v-card-title>
+        <v-card-text class="text-body-2">
           Are you sure you want to purge dead letters for
           <strong class="mono">{{ purgeTarget }}</strong>?
         </v-card-text>
-        <v-card-actions>
+        <v-card-actions class="pa-4 pt-0">
           <v-spacer />
           <v-btn variant="text" @click="purgeDialog = false">Cancel</v-btn>
-          <v-btn color="error" variant="flat" :loading="purging" @click="confirmPurge">Purge</v-btn>
+          <v-btn color="error" variant="flat" rounded="lg" :loading="purging" @click="confirmPurge">Purge</v-btn>
         </v-card-actions>
       </v-card>
     </v-dialog>
 
-    <v-snackbar v-model="snackbar" :color="snackColor" timeout="3000">
+    <v-snackbar v-model="snackbar" :color="snackColor" timeout="3000" rounded="lg">
       {{ snackMessage }}
     </v-snackbar>
   </div>
@@ -135,3 +149,27 @@ let timer: ReturnType<typeof setInterval>
 onMounted(() => { refresh(); timer = setInterval(refresh, 5000) })
 onUnmounted(() => clearInterval(timer))
 </script>
+
+<style lang="scss" scoped>
+.page-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-bottom: 24px;
+}
+.page-title {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  letter-spacing: -0.02em;
+}
+.page-subtitle {
+  font-size: 0.875rem;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+.table-footer {
+  padding: 12px 16px;
+  border-top: 1px solid var(--border-color);
+}
+</style>

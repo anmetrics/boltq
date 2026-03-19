@@ -1,128 +1,61 @@
 <template>
-  <div class="premium-dashboard">
-    <!-- Header Section -->
-    <header class="dashboard-header d-flex align-center mb-10">
+  <div>
+    <!-- Header -->
+    <header class="page-header">
       <div>
-        <h1 class="text-h3 font-weight-black gradient-text-primary mb-1">
-          Infrastructure Control
-        </h1>
-        <div class="d-flex align-center">
-          <div
-            class="status-indicator-group d-flex align-center px-3 py-1 bg-surface-subtle rounded-pill"
-          >
-            <span
-              class="status-dot mr-2"
-              :class="isOnline ? 'online' : 'offline'"
-            />
-            <span
-              class="text-caption font-weight-bold letter-spacing-1"
-              :class="isOnline ? 'text-secondary' : 'text-error'"
-            >
-              SYSTEM {{ isOnline ? "OPERATIONAL" : "OFFLINE" }}
-            </span>
-          </div>
-          <v-divider vertical class="mx-4 my-2" style="opacity: 0.1" />
-          <div
-            class="d-flex align-center text-caption text-muted font-weight-medium"
-          >
-            <v-icon size="14" class="mr-1">mdi-clock-outline</v-icon>
-            UPTIME:
-            {{
-              overview?.uptime_ms
-                ? formatUptime(overview.uptime_ms)
-                : "--:--:--"
-            }}
-          </div>
-        </div>
+        <h1 class="page-title">Dashboard</h1>
+        <p class="page-subtitle">Monitor your message queue infrastructure in real-time</p>
       </div>
-      <v-spacer />
-      <div class="actions-group d-flex align-center">
-        <div class="auto-sync-badge mr-4 d-none d-sm-flex align-center">
-          <div class="pulse-ring mr-2"></div>
-          <span class="text-caption text-muted font-weight-bold"
-            >LIVE SYNC</span
-          >
+      <div class="d-flex align-center ga-3">
+        <div class="live-badge" v-if="isOnline">
+          <span class="live-dot" />
+          <span>Live</span>
         </div>
         <v-btn
-          variant="tonal"
+          variant="outlined"
           color="primary"
-          class="refresh-btn px-6 font-weight-black"
           rounded="lg"
+          size="small"
           :loading="loading"
           @click="refresh"
           prepend-icon="mdi-refresh"
         >
-          REFRESH
+          Refresh
         </v-btn>
       </div>
     </header>
 
-    <!-- Essential Metrics -->
-    <v-row class="mb-10">
-      <v-col
+    <!-- Metrics Grid -->
+    <div class="metrics-grid">
+      <div
         v-for="card in metricCards"
         :key="card.label"
-        cols="12"
-        sm="6"
-        md="4"
-        lg="2"
+        class="modern-card metric-card"
       >
-        <div class="glass-card metric-card h-100 pa-5">
-          <div
-            class="metric-icon-box mb-4"
-            :style="{ '--accent-color': card.color }"
-          >
-            <v-icon :color="card.color" size="24">{{ card.icon }}</v-icon>
-            <div class="icon-glow"></div>
+        <div class="metric-card-header">
+          <div class="metric-icon" :style="{ background: card.bgColor }">
+            <v-icon :color="card.color" size="20">{{ card.icon }}</v-icon>
           </div>
-          <div class="metric-content">
-            <div class="metric-label mb-1">{{ card.label }}</div>
-            <div class="metric-value font-weight-black">
-              {{ formatNumber(card.value) }}
-            </div>
-            <div class="metric-footer d-flex align-center mt-2">
-              <span
-                class="text-caption font-weight-bold"
-                :style="{ color: card.color }"
-                >{{ card.trend }}</span
-              >
-              <v-spacer />
-              <v-icon size="16" color="muted" style="opacity: 0.3"
-                >mdi-chevron-right</v-icon
-              >
-            </div>
-          </div>
+          <span class="metric-label">{{ card.label }}</span>
         </div>
-      </v-col>
-    </v-row>
+        <div class="metric-value">{{ formatNumber(card.value) }}</div>
+      </div>
+    </div>
 
-    <!-- Analytics & System -->
-    <v-row class="mb-10">
+    <!-- Charts & System -->
+    <v-row class="mt-6">
       <v-col cols="12" lg="8">
-        <div class="glass-card chart-container h-100 pa-6">
-          <div class="d-flex align-center justify-space-between mb-8">
-            <div class="d-flex align-center">
-              <div class="accent-line mr-3"></div>
-              <h3 class="text-h6 font-weight-bold">Traffic Analyzers</h3>
-            </div>
-            <div class="chart-legends d-flex align-center">
-              <div class="legend-item mr-6">
-                <span
-                  class="legend-dot"
-                  style="background: var(--primary)"
-                ></span>
-                <span class="text-caption font-weight-bold text-muted"
-                  >PUBLISHED</span
-                >
+        <div class="modern-card pa-6">
+          <div class="d-flex align-center justify-space-between mb-6">
+            <h3 class="card-title">Throughput</h3>
+            <div class="d-flex align-center ga-5">
+              <div class="legend-item">
+                <span class="legend-dot" style="background: var(--primary)" />
+                <span>Published</span>
               </div>
               <div class="legend-item">
-                <span
-                  class="legend-dot"
-                  style="background: var(--secondary)"
-                ></span>
-                <span class="text-caption font-weight-bold text-muted"
-                  >CONSUMED</span
-                >
+                <span class="legend-dot" style="background: var(--success)" />
+                <span>Consumed</span>
               </div>
             </div>
           </div>
@@ -133,144 +66,92 @@
       </v-col>
 
       <v-col cols="12" lg="4">
-        <div class="d-flex flex-column gap-6 h-100">
-          <!-- Resource Pulse -->
-          <div class="glass-card system-card pa-6">
-            <div class="d-flex align-center mb-6">
-              <v-icon color="amber" size="20" class="mr-3">mdi-chip</v-icon>
-              <h3 class="text-subtitle-1 font-weight-bold">System Pulse</h3>
-            </div>
-
-            <div class="resource-meters">
-              <div class="meter-item mb-5">
-                <div class="d-flex align-center justify-space-between mb-2">
-                  <span class="text-caption font-weight-bold text-muted"
-                    >GOROUTINES</span
-                  >
-                  <span class="text-body-2 font-weight-black text-amber">{{
-                    overview?.system?.goroutines || 0
-                  }}</span>
-                </div>
-                <v-progress-linear
-                  model-value="65"
-                  color="amber"
-                  height="4"
-                  rounded
-                />
+        <div class="d-flex flex-column ga-4 h-100">
+          <!-- System -->
+          <div class="modern-card pa-5">
+            <h3 class="card-title mb-4">System</h3>
+            <div class="system-item mb-4">
+              <div class="d-flex align-center justify-space-between mb-2">
+                <span class="system-label">Goroutines</span>
+                <span class="system-value">{{ overview?.system?.goroutines || 0 }}</span>
               </div>
-
-              <div class="meter-item">
-                <div class="d-flex align-center justify-space-between mb-2">
-                  <span class="text-caption font-weight-bold text-muted"
-                    >HEAP MEMORY</span
-                  >
-                  <span class="text-body-2 font-weight-black text-amber">{{
-                    formatBytes(overview?.system?.memory || 0)
-                  }}</span>
-                </div>
-                <v-progress-linear
-                  model-value="45"
-                  color="amber"
-                  height="4"
-                  rounded
-                />
+              <v-progress-linear :model-value="goroutinePercent" color="primary" height="6" rounded />
+            </div>
+            <div class="system-item mb-4">
+              <div class="d-flex align-center justify-space-between mb-2">
+                <span class="system-label">Heap Memory</span>
+                <span class="system-value">{{ formatBytes(overview?.system?.memory || 0) }}</span>
+              </div>
+              <v-progress-linear :model-value="memoryPercent" color="secondary" height="6" rounded />
+            </div>
+            <div class="system-item">
+              <div class="d-flex align-center justify-space-between mb-2">
+                <span class="system-label">Uptime</span>
+                <span class="system-value mono">{{ overview?.uptime_ms ? formatUptime(overview.uptime_ms) : '--:--:--' }}</span>
               </div>
             </div>
           </div>
 
-          <!-- Storage Integrity -->
-          <div class="glass-card system-card pa-6 flex-grow-1">
-            <div class="d-flex align-center mb-6">
-              <v-icon color="accent" size="20" class="mr-3"
-                >mdi-database</v-icon
-              >
-              <h3 class="text-subtitle-1 font-weight-bold">
-                Storage Integrity
-              </h3>
+          <!-- Storage -->
+          <div class="modern-card pa-5 flex-grow-1">
+            <h3 class="card-title mb-4">Storage</h3>
+            <div class="storage-highlight">
+              {{ formatBytes(overview?.storage?.size || 0) }}
             </div>
-
-            <div
-              class="storage-info text-center py-6 bg-surface-subtle rounded-lg mb-4"
-            >
-              <div class="text-caption font-weight-bold text-muted mb-1">
-                CURRENT DATA VOLUME
-              </div>
-              <div class="text-h4 font-weight-black text-accent-light">
-                {{ formatBytes(overview?.storage?.size || 0) }}
-              </div>
-            </div>
-
-            <div class="storage-details">
-              <v-progress-linear
-                :model-value="storagePercent"
-                color="accent"
-                height="6"
-                rounded
-                class="mb-3 progress-glow"
-              />
-              <div
-                class="d-flex justify-space-between text-caption font-weight-bold text-muted"
-              >
-                <span
-                  >MODE:
-                  {{ overview?.storage?.mode?.toUpperCase() || "N/A" }}</span
-                >
-                <span
-                  >THRESHOLD:
-                  {{
-                    formatBytes(overview?.storage?.compaction_threshold || 0)
-                  }}</span
-                >
-              </div>
+            <v-progress-linear
+              :model-value="storagePercent"
+              color="accent"
+              height="6"
+              rounded
+              class="mb-3 mt-4"
+            />
+            <div class="d-flex justify-space-between">
+              <span class="text-caption text-medium-emphasis">
+                Mode: {{ overview?.storage?.mode?.toUpperCase() || 'N/A' }}
+              </span>
+              <span class="text-caption text-medium-emphasis">
+                Threshold: {{ formatBytes(overview?.storage?.compaction_threshold || 0) }}
+              </span>
             </div>
           </div>
         </div>
       </v-col>
     </v-row>
 
-    <!-- Data Explorers -->
-    <v-row>
+    <!-- Tables -->
+    <v-row class="mt-6">
       <v-col cols="12" md="6">
-        <div class="glass-card table-glass pa-0">
-          <div class="pa-6 d-flex align-center">
-            <v-icon color="primary" class="mr-3">mdi-tray-full</v-icon>
-            <h3 class="text-h6 font-weight-bold">Active Message Hubs</h3>
-            <v-spacer />
-            <v-btn
-              to="/queues"
-              variant="text"
-              color="primary"
-              size="small"
-              rounded="lg"
-              >EXPLORE ALL</v-btn
-            >
+        <div class="modern-card-flat">
+          <div class="card-table-header">
+            <div class="d-flex align-center">
+              <v-icon color="primary" size="20" class="mr-2">mdi-tray-full</v-icon>
+              <h3 class="card-title">Queues</h3>
+            </div>
+            <v-btn to="/queues" variant="text" color="primary" size="small" rounded="lg">
+              View all
+            </v-btn>
           </div>
-          <v-table class="premium-table">
+          <v-table class="premium-table" density="compact">
             <thead>
               <tr>
-                <th class="text-left">IDENTIFIER</th>
-                <th class="text-right">VOLUME</th>
-                <th class="text-right">FAILURE RATE</th>
+                <th>Name</th>
+                <th class="text-right">Messages</th>
+                <th class="text-right">Dead Letters</th>
               </tr>
             </thead>
             <tbody>
               <tr v-for="q in queueRows.slice(0, 5)" :key="q.name">
-                <td class="mono font-weight-bold text-primary">{{ q.name }}</td>
-                <td class="text-right mono font-weight-black">
-                  {{ formatNumber(q.messages) }}
-                </td>
+                <td class="mono font-weight-medium" style="color: var(--primary)">{{ q.name }}</td>
+                <td class="text-right mono font-weight-medium">{{ formatNumber(q.messages) }}</td>
                 <td class="text-right">
-                  <v-chip
-                    v-if="q.deadLetters > 0"
-                    size="x-small"
-                    color="error"
-                    variant="flat"
-                    class="font-weight-black"
-                  >
-                    {{ q.deadLetters }} DLQ
+                  <v-chip v-if="q.deadLetters > 0" size="x-small" color="error" variant="tonal" class="font-weight-bold">
+                    {{ q.deadLetters }}
                   </v-chip>
-                  <span v-else class="text-muted opacity-30">—</span>
+                  <span v-else class="text-medium-emphasis">-</span>
                 </td>
+              </tr>
+              <tr v-if="queueRows.length === 0">
+                <td colspan="3" class="text-center text-medium-emphasis pa-6">No queues yet</td>
               </tr>
             </tbody>
           </v-table>
@@ -278,44 +159,34 @@
       </v-col>
 
       <v-col cols="12" md="6">
-        <div class="glass-card table-glass pa-0">
-          <div class="pa-6 d-flex align-center">
-            <v-icon color="secondary" class="mr-3">mdi-broadcast</v-icon>
-            <h3 class="text-h6 font-weight-bold">Global Topics</h3>
-            <v-spacer />
-            <v-btn
-              to="/topics"
-              variant="text"
-              color="secondary"
-              size="small"
-              rounded="lg"
-              >EXPLORE ALL</v-btn
-            >
+        <div class="modern-card-flat">
+          <div class="card-table-header">
+            <div class="d-flex align-center">
+              <v-icon color="success" size="20" class="mr-2">mdi-broadcast</v-icon>
+              <h3 class="card-title">Topics</h3>
+            </div>
+            <v-btn to="/topics" variant="text" color="success" size="small" rounded="lg">
+              View all
+            </v-btn>
           </div>
-          <v-table class="premium-table">
+          <v-table class="premium-table" density="compact">
             <thead>
               <tr>
-                <th class="text-left">NAMESPACE</th>
-                <th class="text-right">PROPAGATION</th>
+                <th>Name</th>
+                <th class="text-right">Subscribers</th>
               </tr>
             </thead>
             <tbody>
               <tr v-for="t in topicRows.slice(0, 5)" :key="t.name">
-                <td class="mono font-weight-bold text-secondary">
-                  {{ t.name }}
-                </td>
+                <td class="mono font-weight-medium" style="color: var(--success)">{{ t.name }}</td>
                 <td class="text-right">
-                  <div
-                    class="subscriber-badge d-inline-flex align-center px-3 py-1 rounded-pill"
-                  >
-                    <v-icon size="12" color="secondary" class="mr-2"
-                      >mdi-account-group</v-icon
-                    >
-                    <span class="text-caption font-weight-black text-secondary"
-                      >{{ t.subscribers }} ENTHUSIASTS</span
-                    >
-                  </div>
+                  <v-chip size="x-small" :color="t.subscribers > 0 ? 'success' : 'default'" variant="tonal" class="font-weight-bold">
+                    {{ t.subscribers }} subs
+                  </v-chip>
                 </td>
+              </tr>
+              <tr v-if="topicRows.length === 0">
+                <td colspan="2" class="text-center text-medium-emphasis pa-6">No topics yet</td>
               </tr>
             </tbody>
           </v-table>
@@ -326,359 +197,302 @@
 </template>
 
 <script setup lang="ts">
-import { useIntervalFn } from "@vueuse/core";
+import { useIntervalFn } from '@vueuse/core'
 
-const api = useApi();
-const { isOnline, setOnline } = useServerStatus();
+const api = useApi()
+const { isOnline, setOnline } = useServerStatus()
 
-const loading = ref(false);
-const overview = ref<any>(null);
-const history = ref<{ time: string; published: number; consumed: number }[]>(
-  [],
-);
-const MAX_HISTORY = 30;
+const loading = ref(false)
+const overview = ref<any>(null)
+const history = ref<{ time: string; published: number; consumed: number }[]>([])
+const MAX_HISTORY = 30
+
+const { isDark } = useAppTheme()
 
 const metricCards = computed(() => {
-  const m = overview.value?.metrics || {};
+  const m = overview.value?.metrics || {}
+  const d = isDark.value
   return [
-    {
-      label: "TOTAL PUBLISHED",
-      value: m.messages_published || 0,
-      icon: "mdi-cloud-upload",
-      color: "#00f2ff",
-      trend: "LIVE STREAM",
-    },
-    {
-      label: "TOTAL CONSUMED",
-      value: m.messages_consumed || 0,
-      icon: "mdi-cloud-download",
-      color: "#00ff88",
-      trend: "REAL TIME",
-    },
-    {
-      label: "PENDING SYNC",
-      value: overview.value?.stats?.PendingCount || 0,
-      icon: "mdi-vibrate",
-      color: "#ffc107",
-      trend: "PROCESSING",
-    },
-    {
-      label: "ACKNOWLEDGED",
-      value: m.messages_acked || 0,
-      icon: "mdi-shield-check-outline",
-      color: "#4caf50",
-      trend: "SECURED",
-    },
-    {
-      label: "FAILED / NACK",
-      value: m.messages_nacked || 0,
-      icon: "mdi-alert-octagon-outline",
-      color: "#ff5252",
-      trend: "RETRYING",
-    },
-    {
-      label: "DEAD LETTERS",
-      value: m.dead_letter_count || 0,
-      icon: "mdi-skull-scan-outline",
-      color: "#ff1744",
-      trend: "CRITICAL",
-    },
-  ];
-});
+    { label: 'Published', value: m.messages_published || 0, icon: 'mdi-arrow-up-circle-outline', color: d ? '#818cf8' : '#6366f1', bgColor: d ? 'rgba(129,140,248,0.12)' : '#eef2ff' },
+    { label: 'Consumed', value: m.messages_consumed || 0, icon: 'mdi-arrow-down-circle-outline', color: d ? '#34d399' : '#10b981', bgColor: d ? 'rgba(52,211,153,0.12)' : '#ecfdf5' },
+    { label: 'Pending', value: overview.value?.stats?.PendingCount || 0, icon: 'mdi-clock-outline', color: d ? '#fbbf24' : '#f59e0b', bgColor: d ? 'rgba(251,191,36,0.12)' : '#fffbeb' },
+    { label: 'Acknowledged', value: m.messages_acked || 0, icon: 'mdi-check-circle-outline', color: d ? '#34d399' : '#10b981', bgColor: d ? 'rgba(52,211,153,0.12)' : '#ecfdf5' },
+    { label: 'Nacked', value: m.messages_nacked || 0, icon: 'mdi-close-circle-outline', color: d ? '#f87171' : '#ef4444', bgColor: d ? 'rgba(248,113,113,0.12)' : '#fef2f2' },
+    { label: 'Dead Letters', value: m.dead_letter_count || 0, icon: 'mdi-alert-circle-outline', color: d ? '#f87171' : '#ef4444', bgColor: d ? 'rgba(248,113,113,0.12)' : '#fef2f2' },
+  ]
+})
+
+const goroutinePercent = computed(() => {
+  const g = overview.value?.system?.goroutines || 0
+  return Math.min((g / 1000) * 100, 100)
+})
+
+const memoryPercent = computed(() => {
+  const mem = overview.value?.system?.memory || 0
+  const maxMem = 1024 * 1024 * 1024 // 1GB as reference
+  return Math.min((mem / maxMem) * 100, 100)
+})
 
 const storagePercent = computed(() => {
-  const size = overview.value?.storage?.size || 0;
-  const threshold = overview.value?.storage?.compaction_threshold || 104857600;
-  return Math.min((size / threshold) * 100, 100);
-});
+  const size = overview.value?.storage?.size || 0
+  const threshold = overview.value?.storage?.compaction_threshold || 104857600
+  return Math.min((size / threshold) * 100, 100)
+})
 
 const queueRows = computed(() => {
-  const queues = overview.value?.stats?.Queues || {};
-  const dls = overview.value?.stats?.DeadLetters || {};
+  const queues = overview.value?.stats?.Queues || {}
+  const dls = overview.value?.stats?.DeadLetters || {}
   return Object.entries(queues).map(([name, messages]) => ({
     name,
     messages: messages as number,
-    deadLetters: (dls[name + "_dead_letter"] || 0) as number,
-  }));
-});
+    deadLetters: (dls[name + '_dead_letter'] || 0) as number,
+  }))
+})
 
 const topicRows = computed(() => {
-  const topics = overview.value?.stats?.Topics || {};
+  const topics = overview.value?.stats?.Topics || {}
   return Object.entries(topics).map(([name, subscribers]) => ({
     name,
     subscribers: subscribers as number,
-  }));
-});
+  }))
+})
 
-// Throughput Chart Option
 const throughputOption = computed(() => {
+  const d = isDark.value
+  const primaryLine = d ? '#818cf8' : '#6366f1'
+  const successLine = d ? '#34d399' : '#10b981'
   return {
-    backgroundColor: "transparent",
-    grid: {
-      left: "0%",
-      right: "2%",
-      bottom: "0%",
-      top: "10%",
-      containLabel: true,
+  backgroundColor: 'transparent',
+  grid: { left: '0%', right: '2%', bottom: '0%', top: '10%', containLabel: true },
+  tooltip: {
+    trigger: 'axis',
+    backgroundColor: d ? '#1a1d27' : '#fff',
+    borderColor: d ? '#2e3345' : '#e5e7eb',
+    borderWidth: 1,
+    padding: [10, 14],
+    textStyle: { color: d ? '#e2e8f0' : '#374151', fontFamily: 'Inter', fontSize: 12 },
+    axisPointer: { lineStyle: { color: d ? '#2e3345' : '#e5e7eb', type: 'dashed' } },
+  },
+  xAxis: {
+    type: 'category',
+    data: history.value.map(h => h.time),
+    axisLine: { show: false },
+    axisTick: { show: false },
+    axisLabel: { color: d ? '#64748b' : '#9ca3af', fontSize: 11, margin: 12 },
+  },
+  yAxis: {
+    type: 'value',
+    splitLine: { lineStyle: { color: d ? '#242836' : '#f3f4f6', type: 'dashed' } },
+    axisLabel: { color: d ? '#64748b' : '#9ca3af', fontSize: 11 },
+  },
+  series: [
+    {
+      name: 'Published',
+      type: 'line',
+      smooth: 0.4,
+      showSymbol: false,
+      data: history.value.map(h => h.published),
+      lineStyle: { width: 2.5, color: primaryLine },
+      areaStyle: {
+        opacity: 0.08,
+        color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [{ offset: 0, color: primaryLine }, { offset: 1, color: 'transparent' }] },
+      },
     },
-    tooltip: {
-      trigger: "axis",
-      backgroundColor: "rgba(9, 9, 11, 0.95)",
-      borderColor: "rgba(255, 255, 255, 0.15)",
-      borderWidth: 1,
-      padding: [12, 16],
-      textStyle: {
-        color: "#fff",
-        fontFamily: "Inter",
-        fontSize: 12,
-      },
-      axisPointer: {
-        lineStyle: {
-          color: "rgba(255, 255, 255, 0.2)",
-          type: "dashed",
-        },
+    {
+      name: 'Consumed',
+      type: 'line',
+      smooth: 0.4,
+      showSymbol: false,
+      data: history.value.map(h => h.consumed),
+      lineStyle: { width: 2.5, color: successLine },
+      areaStyle: {
+        opacity: 0.08,
+        color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [{ offset: 0, color: successLine }, { offset: 1, color: 'transparent' }] },
       },
     },
-    xAxis: {
-      type: "category",
-      data: history.value.map((h) => h.time),
-      axisLine: { show: false },
-      axisTick: { show: false },
-      axisLabel: { color: "#626771", fontSize: 10, margin: 15 },
-    },
-    yAxis: {
-      type: "value",
-      splitLine: {
-        lineStyle: {
-          color: "rgba(255, 255, 255, 0.03)",
-          type: "solid",
-        },
-      },
-      axisLabel: { color: "#626771", fontSize: 10 },
-    },
-    series: [
-      {
-        name: "PUBLISHED",
-        type: "line",
-        smooth: 0.4,
-        showSymbol: false,
-        data: history.value.map((h) => h.published),
-        lineStyle: {
-          width: 4,
-          color: "#00f2ff",
-          shadowBlur: 20,
-          shadowColor: "rgba(0, 242, 155, 0.5)",
-        },
-        areaStyle: {
-          opacity: 0.05,
-          color: {
-            type: "linear",
-            x: 0,
-            y: 0,
-            x2: 0,
-            y2: 1,
-            colorStops: [
-              { offset: 0, color: "#00f2ff" },
-              { offset: 1, color: "transparent" },
-            ],
-          },
-        },
-      },
-      {
-        name: "CONSUMED",
-        type: "line",
-        smooth: 0.4,
-        showSymbol: false,
-        data: history.value.map((h) => h.consumed),
-        lineStyle: {
-          width: 4,
-          color: "#00ff88",
-          shadowBlur: 20,
-          shadowColor: "rgba(0, 255, 136, 0.5)",
-        },
-        areaStyle: {
-          opacity: 0.05,
-          color: {
-            type: "linear",
-            x: 0,
-            y: 0,
-            x2: 0,
-            y2: 1,
-            colorStops: [
-              { offset: 0, color: "#00ff88" },
-              { offset: 1, color: "transparent" },
-            ],
-          },
-        },
-      },
-    ],
-  };
-});
+  ],
+}})
 
 function formatNumber(n: number): string {
-  if (n >= 1_000_000) return (n / 1_000_000).toFixed(2) + "M";
-  if (n >= 1_000) return (n / 1_000).toFixed(1) + "K";
-  return n.toLocaleString();
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(2) + 'M'
+  if (n >= 1_000) return (n / 1_000).toFixed(1) + 'K'
+  return n.toLocaleString()
 }
 
 function formatBytes(bytes: number): string {
-  if (bytes === 0) return "0 B";
-  const k = 1024;
-  const sizes = ["B", "KB", "MB", "GB", "TB"];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i];
+  if (bytes === 0) return '0 B'
+  const k = 1024
+  const sizes = ['B', 'KB', 'MB', 'GB', 'TB']
+  const i = Math.floor(Math.log(bytes) / Math.log(k))
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i]
 }
 
 function formatUptime(ms: number): string {
-  const seconds = Math.floor(ms / 1000);
-  const h = Math.floor(seconds / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  const s = seconds % 60;
-  return `${h.toString().padStart(2, "0")}:${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
+  const seconds = Math.floor(ms / 1000)
+  const h = Math.floor(seconds / 3600)
+  const m = Math.floor((seconds % 3600) / 60)
+  const s = seconds % 60
+  return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`
 }
 
 async function refresh() {
-  loading.value = true;
+  loading.value = true
   try {
-    const data = await api.getOverview();
-    const now = new Date().toLocaleTimeString([], {
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-    });
-    const lastMetrics = overview.value?.metrics;
+    const data = await api.getOverview()
+    const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+    const lastMetrics = overview.value?.metrics
 
     if (lastMetrics) {
-      const pubSec = Math.max(
-        0,
-        data.metrics.messages_published - lastMetrics.messages_published,
-      );
-      const conSec = Math.max(
-        0,
-        data.metrics.messages_consumed - lastMetrics.messages_consumed,
-      );
-      history.value.push({ time: now, published: pubSec, consumed: conSec });
-      if (history.value.length > MAX_HISTORY) history.value.shift();
+      const pubSec = Math.max(0, data.metrics.messages_published - lastMetrics.messages_published)
+      const conSec = Math.max(0, data.metrics.messages_consumed - lastMetrics.messages_consumed)
+      history.value.push({ time: now, published: pubSec, consumed: conSec })
+      if (history.value.length > MAX_HISTORY) history.value.shift()
     }
 
-    overview.value = data;
-    setOnline(true);
+    overview.value = data
+    setOnline(true)
   } catch {
-    setOnline(false);
+    setOnline(false)
   } finally {
-    loading.value = false;
+    loading.value = false
   }
 }
 
-useIntervalFn(refresh, 3000);
-onMounted(refresh);
+useIntervalFn(refresh, 3000)
+onMounted(refresh)
 </script>
 
 <style lang="scss" scoped>
-.premium-dashboard {
+.page-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-bottom: 28px;
+}
+
+.page-title {
+  font-size: 1.5rem;
+  font-weight: 700;
   color: var(--text-primary);
+  letter-spacing: -0.02em;
 }
 
-.bg-surface-subtle {
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid var(--glass-border);
+.page-subtitle {
+  font-size: 0.875rem;
+  color: var(--text-muted);
+  margin-top: 2px;
 }
 
-.letter-spacing-1 {
-  letter-spacing: 0.1em;
+.live-badge {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  background: var(--success-light);
+  border: 1px solid rgba(16, 185, 129, 0.2);
+  border-radius: 20px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--success);
 }
 
-.status-indicator-group {
-  box-shadow: 0 0 20px rgba(0, 0, 0, 0.2);
+.live-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--success);
+  animation: pulse 2s infinite;
 }
 
-.chart-wrapper {
-  height: 350px;
+@keyframes pulse {
+  0% { opacity: 1; }
+  50% { opacity: 0.4; }
+  100% { opacity: 1; }
+}
+
+.metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 16px;
 }
 
 .metric-card {
-  position: relative;
-  overflow: hidden;
+  padding: 20px;
 
-  .metric-icon-box {
-    width: 48px;
-    height: 48px;
-    background: rgba(var(--accent-color), 0.1);
-    border-radius: 12px;
+  .metric-card-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 14px;
+  }
+
+  .metric-icon {
+    width: 36px;
+    height: 36px;
+    border-radius: 10px;
     display: flex;
     align-items: center;
     justify-content: center;
-    position: relative;
+  }
 
-    .icon-glow {
-      position: absolute;
-      width: 100%;
-      height: 100%;
-      background: var(--accent-color);
-      filter: blur(20px);
-      opacity: 0.05;
-      z-index: 0;
-    }
-
-    .v-icon {
-      z-index: 1;
-    }
+  .metric-value {
+    font-size: 1.75rem;
   }
 }
 
-.accent-line {
-  width: 4px;
-  height: 24px;
-  background: var(--primary);
-  border-radius: 4px;
-  box-shadow: 0 0 10px var(--primary);
+.card-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.chart-wrapper {
+  height: 320px;
+}
+
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  font-weight: 500;
 }
 
 .legend-dot {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  display: inline-block;
-  margin-right: 8px;
 }
 
-.pulse-ring {
-  width: 8px;
-  height: 8px;
-  background: var(--secondary);
-  border-radius: 50%;
-  position: relative;
-
-  &::before {
-    content: "";
-    position: absolute;
-    width: 100%;
-    height: 100%;
-    background: var(--secondary);
-    border-radius: 50%;
-    animation: pulse 2s infinite;
-  }
+.system-label {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  font-weight: 500;
 }
 
-.progress-glow {
-  box-shadow: 0 0 15px rgba(191, 0, 255, 0.2);
+.system-value {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-primary);
 }
 
-.text-accent-light {
-  color: #ea9fff;
-  text-shadow: 0 0 20px rgba(191, 0, 255, 0.3);
+.storage-highlight {
+  font-size: 1.75rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  letter-spacing: -0.02em;
 }
 
-.subscriber-badge {
-  background: rgba(0, 255, 136, 0.05);
-  border: 1px solid rgba(0, 255, 136, 0.1);
+.card-table-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 16px 12px;
+  border-bottom: 1px solid var(--border-color);
 }
 
-.gap-6 {
-  gap: 24px;
-}
-
-.opacity-30 {
-  opacity: 0.3;
-}
+.ga-3 { gap: 12px; }
+.ga-4 { gap: 16px; }
+.ga-5 { gap: 20px; }
 </style>

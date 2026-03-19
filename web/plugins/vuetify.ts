@@ -7,30 +7,47 @@ export default defineNuxtPlugin((app) => {
     components,
     directives,
     theme: {
-      defaultTheme: 'boltqDark',
+      defaultTheme: 'boltqLight',
       themes: {
+        boltqLight: {
+          dark: false,
+          colors: {
+            background: '#f8f9fb',
+            surface: '#ffffff',
+            'surface-variant': '#f1f3f5',
+            primary: '#6366f1',
+            secondary: '#8b5cf6',
+            accent: '#06b6d4',
+            success: '#10b981',
+            warning: '#f59e0b',
+            error: '#ef4444',
+            info: '#3b82f6',
+            'on-background': '#111827',
+            'on-surface': '#374151',
+          },
+        },
         boltqDark: {
           dark: true,
           colors: {
-            background: '#0f1923',
-            surface: '#1a2735',
-            'surface-variant': '#1e3040',
-            primary: '#00d4aa',
-            secondary: '#4fc3f7',
-            accent: '#7c4dff',
-            success: '#66bb6a',
-            warning: '#ffa726',
-            error: '#ef5350',
-            info: '#42a5f5',
-            'on-background': '#e0e6ed',
-            'on-surface': '#c8d6e5',
+            background: '#0f1117',
+            surface: '#1a1d27',
+            'surface-variant': '#242836',
+            primary: '#818cf8',
+            secondary: '#a78bfa',
+            accent: '#22d3ee',
+            success: '#34d399',
+            warning: '#fbbf24',
+            error: '#f87171',
+            info: '#60a5fa',
+            'on-background': '#f1f5f9',
+            'on-surface': '#e2e8f0',
           },
         },
       },
     },
     defaults: {
       VCard: {
-        rounded: 'lg',
+        rounded: 'xl',
         elevation: 0,
       },
       VBtn: {
@@ -38,6 +55,11 @@ export default defineNuxtPlugin((app) => {
       },
       VChip: {
         rounded: 'lg',
+      },
+      VTextField: {
+        variant: 'outlined',
+        density: 'compact',
+        color: 'primary',
       },
     },
   })
