@@ -44,6 +44,7 @@ Content-Type: application/json
 | `topic` | string | Yes | Queue name |
 | `payload` | any | Yes | Message payload (any valid JSON) |
 | `headers` | object | No | Key-value metadata headers |
+| `priority` | int | No | Priority level 0-9 (higher = more urgent, default 0) |
 
 **Response (200 OK):**
 ```json
@@ -308,6 +309,347 @@ GET /health
 
 ---
 
+## Exchange Routing
+
+BoltQ supports exchange-based routing for flexible message distribution. Exchanges receive messages and route them to bound queues based on type-specific rules.
+
+---
+
+### POST /exchange/declare
+
+Create or assert an exchange.
+
+**Request:**
+```http
+POST /exchange/declare
+Content-Type: application/json
+
+{
+  "name": "logs",
+  "type": "topic",
+  "durable": true
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | Yes | Exchange name |
+| `type` | string | Yes | Exchange type: `direct`, `fanout`, `topic`, `headers` |
+| `durable` | bool | No | Survive server restart (default false) |
+
+**Response (200 OK):**
+```json
+{"status": "ok"}
+```
+
+---
+
+### POST /exchange/delete
+
+Delete an exchange.
+
+**Request:**
+```http
+POST /exchange/delete
+Content-Type: application/json
+
+{"name": "logs"}
+```
+
+**Response (200 OK):**
+```json
+{"status": "ok"}
+```
+
+---
+
+### POST /exchange/bind
+
+Bind a queue to an exchange.
+
+**Request:**
+```http
+POST /exchange/bind
+Content-Type: application/json
+
+{
+  "exchange": "logs",
+  "queue": "error_logs",
+  "binding_key": "log.error.*",
+  "headers": {},
+  "match_all": false
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `exchange` | string | Yes | Exchange name |
+| `queue` | string | Yes | Target queue name |
+| `binding_key` | string | No | Routing pattern (used by `direct` and `topic` types) |
+| `headers` | object | No | Header match rules (used by `headers` type) |
+| `match_all` | bool | No | If true, all headers must match; if false, any match suffices |
+
+**Response (200 OK):**
+```json
+{"status": "ok"}
+```
+
+---
+
+### POST /exchange/unbind
+
+Remove a binding.
+
+**Request:**
+```http
+POST /exchange/unbind
+Content-Type: application/json
+
+{
+  "exchange": "logs",
+  "queue": "error_logs",
+  "binding_key": "log.error.*"
+}
+```
+
+**Response (200 OK):**
+```json
+{"status": "ok"}
+```
+
+---
+
+### POST /exchange/publish
+
+Publish to an exchange with routing key.
+
+**Request:**
+```http
+POST /exchange/publish
+Content-Type: application/json
+
+{
+  "exchange": "logs",
+  "routing_key": "log.error.auth",
+  "payload": {"message": "Failed login attempt"},
+  "headers": {},
+  "priority": 5
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `exchange` | string | Yes | Target exchange name |
+| `routing_key` | string | No | Routing key for `direct`/`topic` exchanges |
+| `payload` | any | Yes | Message payload (any valid JSON) |
+| `headers` | object | No | Message headers |
+| `priority` | int | No | Priority level 0-9 (higher = more urgent, default 0) |
+
+**Response (200 OK):**
+```json
+{"status": "published", "id": "a1b2c3d4e5f67890abcdef1234567890"}
+```
+
+---
+
+## Cache / KV Store
+
+BoltQ includes a built-in in-memory KV store with TTL support. Enable it via config (`cache.enabled: true`).
+
+---
+
+### POST /cache/set
+
+Store a key-value pair.
+
+**Request:**
+```http
+POST /cache/set
+Content-Type: application/json
+
+{
+  "key": "user:123:session",
+  "value": {"token": "abc", "role": "admin"},
+  "ttl": 3600000
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `key` | string | Yes | Cache key |
+| `value` | any | Yes | Value (string, number, JSON object) |
+| `ttl` | number | No | Time-to-live in milliseconds. 0 = no expiry |
+
+**Response (200 OK):**
+```json
+{"status": "ok", "key": "user:123:session"}
+```
+
+---
+
+### GET /cache/get
+
+Retrieve a value by key.
+
+**Request:**
+```http
+GET /cache/get?key=user:123:session
+```
+
+**Response (200 OK):**
+```json
+{
+  "key": "user:123:session",
+  "value": {"token": "abc", "role": "admin"},
+  "ttl": 3542100,
+  "created_at": 1706900000000000000
+}
+```
+
+**Response (404):** Key not found or expired.
+
+---
+
+### POST /cache/del
+
+Delete a key.
+
+**Request:**
+```http
+POST /cache/del
+Content-Type: application/json
+
+{"key": "user:123:session"}
+```
+
+**Response (200 OK):**
+```json
+{"status": "ok", "deleted": true}
+```
+
+---
+
+### GET /cache/keys
+
+List keys matching a glob pattern.
+
+**Request:**
+```http
+GET /cache/keys?pattern=user:*
+```
+
+| Pattern | Matches |
+|---------|---------|
+| `*` | All keys |
+| `user:*` | Keys starting with "user:" |
+| `*:session` | Keys ending with ":session" |
+| `*config*` | Keys containing "config" |
+
+**Response (200 OK):**
+```json
+{"keys": ["user:123:session", "user:456:session"], "count": 2}
+```
+
+---
+
+### GET /cache/exists
+
+Check if a key exists.
+
+**Request:**
+```http
+GET /cache/exists?key=user:123:session
+```
+
+**Response (200 OK):**
+```json
+{"key": "user:123:session", "exists": true}
+```
+
+---
+
+### POST /cache/expire
+
+Set or update TTL on a key.
+
+**Request:**
+```http
+POST /cache/expire
+Content-Type: application/json
+
+{"key": "user:123:session", "ttl": 60000}
+```
+
+---
+
+### POST /cache/incr
+
+Atomically increment a numeric value. Creates the key with the delta if it doesn't exist.
+
+**Request:**
+```http
+POST /cache/incr
+Content-Type: application/json
+
+{"key": "rate:api:calls", "delta": 1}
+```
+
+**Response (200 OK):**
+```json
+{"key": "rate:api:calls", "value": 42}
+```
+
+---
+
+### POST /cache/flush
+
+Remove all cache entries.
+
+**Request:**
+```http
+POST /cache/flush
+```
+
+**Response (200 OK):**
+```json
+{"status": "flushed", "removed": 1234}
+```
+
+---
+
+### GET /cache/stats
+
+Get cache statistics.
+
+**Response (200 OK):**
+```json
+{
+  "enabled": true,
+  "stats": {
+    "key_count": 150,
+    "memory_used": 48320,
+    "hits": 12500,
+    "misses": 340,
+    "sets": 1200,
+    "deletes": 50,
+    "expired": 80
+  }
+}
+```
+
+---
+
+### GET /cache/entries
+
+Browse cache entries (for admin UI). Limited to 100 entries.
+
+**Request:**
+```http
+GET /cache/entries?pattern=*&search=user
+```
+
+---
+
 ## Message Structure
 
 ```json
@@ -320,7 +662,10 @@ GET /health
   },
   "timestamp": 1706900000000000000,
   "retry": 0,
-  "max_retry": 5
+  "max_retry": 5,
+  "priority": 0,
+  "exchange": "",
+  "routing_key": ""
 }
 ```
 
@@ -333,6 +678,9 @@ GET /health
 | `timestamp` | int64 | Creation time (Unix nanoseconds) |
 | `retry` | int | Current retry count |
 | `max_retry` | int | Maximum retries before dead-letter |
+| `priority` | int | Priority level 0-9 (higher = more urgent) |
+| `exchange` | string | Source exchange name (empty if published directly) |
+| `routing_key` | string | Routing key used for exchange routing |
 
 ## Rate Limits
 

@@ -48,8 +48,9 @@ type Message struct {
 
 // PublishOptions configures a single publish operation.
 type PublishOptions struct {
-	Delay time.Duration
-	TTL   time.Duration
+	Delay    time.Duration
+	TTL      time.Duration
+	Priority int // 0-9, higher = more urgent
 }
 
 // NotLeaderError is returned when the connected node is not the cluster leader.
@@ -174,6 +175,13 @@ func (c *Client) Close() error {
 	return nil
 }
 
+// EnableConfirm enables publisher confirm mode on this connection.
+// After enabling, publish responses will include seq_no and ack fields.
+func (c *Client) EnableConfirm() error {
+	_, err := c.command(protocol.CmdConfirmSelect, []byte(`{}`))
+	return err
+}
+
 func (c *Client) Publish(topic string, payload interface{}, headers map[string]string, opts *PublishOptions) (string, error) {
 	if opts == nil {
 		opts = &PublishOptions{}
@@ -184,11 +192,12 @@ func (c *Client) Publish(topic string, payload interface{}, headers map[string]s
 	}
 
 	body, _ := json.Marshal(map[string]interface{}{
-		"topic":   topic,
-		"payload": json.RawMessage(data),
-		"headers": headers,
-		"delay":   int64(opts.Delay),
-		"ttl":     int64(opts.TTL),
+		"topic":    topic,
+		"payload":  json.RawMessage(data),
+		"headers":  headers,
+		"delay":    int64(opts.Delay),
+		"ttl":      int64(opts.TTL),
+		"priority": opts.Priority,
 	})
 
 	idBytes, err := c.command(protocol.CmdPublish, body)
@@ -214,12 +223,85 @@ func (c *Client) PublishTopic(topic string, payload interface{}, headers map[str
 	}
 
 	body, _ := json.Marshal(map[string]interface{}{
-		"topic":   topic,
-		"payload": json.RawMessage(data),
-		"headers": headers,
+		"topic":    topic,
+		"payload":  json.RawMessage(data),
+		"headers":  headers,
+		"priority": opts.Priority,
 	})
 
 	resp, err := c.command(protocol.CmdPublishTopic, body)
+	if err != nil {
+		return "", err
+	}
+
+	var result struct {
+		ID string `json:"id"`
+	}
+	json.Unmarshal(resp, &result)
+	return result.ID, nil
+}
+
+// ExchangeDeclare creates or asserts an exchange on the server.
+func (c *Client) ExchangeDeclare(name, typ string, durable bool) error {
+	body, _ := json.Marshal(map[string]interface{}{
+		"name":    name,
+		"type":    typ,
+		"durable": durable,
+	})
+	_, err := c.command(protocol.CmdExchangeDeclare, body)
+	return err
+}
+
+// ExchangeDelete removes an exchange from the server.
+func (c *Client) ExchangeDelete(name string) error {
+	body, _ := json.Marshal(map[string]string{"name": name})
+	_, err := c.command(protocol.CmdExchangeDelete, body)
+	return err
+}
+
+// BindQueue binds a queue to an exchange with the given binding key.
+func (c *Client) BindQueue(exchange, queue, bindingKey string, headers map[string]string, matchAll bool) error {
+	body, _ := json.Marshal(map[string]interface{}{
+		"exchange":    exchange,
+		"queue":       queue,
+		"binding_key": bindingKey,
+		"headers":     headers,
+		"match_all":   matchAll,
+	})
+	_, err := c.command(protocol.CmdBindQueue, body)
+	return err
+}
+
+// UnbindQueue removes a binding between a queue and an exchange.
+func (c *Client) UnbindQueue(exchange, queue, bindingKey string) error {
+	body, _ := json.Marshal(map[string]string{
+		"exchange":    exchange,
+		"queue":       queue,
+		"binding_key": bindingKey,
+	})
+	_, err := c.command(protocol.CmdUnbindQueue, body)
+	return err
+}
+
+// PublishToExchange publishes a message to an exchange with a routing key.
+func (c *Client) PublishToExchange(exchange, routingKey string, payload interface{}, headers map[string]string, opts *PublishOptions) (string, error) {
+	if opts == nil {
+		opts = &PublishOptions{}
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return "", fmt.Errorf("marshal payload: %w", err)
+	}
+
+	body, _ := json.Marshal(map[string]interface{}{
+		"exchange":    exchange,
+		"routing_key": routingKey,
+		"payload":     json.RawMessage(data),
+		"headers":     headers,
+		"priority":    opts.Priority,
+	})
+
+	resp, err := c.command(protocol.CmdPublishExchange, body)
 	if err != nil {
 		return "", err
 	}
@@ -484,4 +566,181 @@ func parseNotLeaderError(payload []byte) *NotLeaderError {
 	var nle NotLeaderError
 	json.Unmarshal(payload, &nle)
 	return &nle
+}
+
+// ---------------------------------------------------------------------------
+// Cache / KV Store (HTTP-based)
+// ---------------------------------------------------------------------------
+
+// CacheEntry represents a cached key-value entry.
+type CacheEntry struct {
+	Key       string          `json:"key"`
+	Value     json.RawMessage `json:"value"`
+	TTL       int64           `json:"ttl"` // remaining TTL in ms, -1 = no expiry
+	CreatedAt int64           `json:"created_at"`
+}
+
+// CacheStats represents cache statistics.
+type CacheStats struct {
+	Enabled bool `json:"enabled"`
+	Stats   struct {
+		KeyCount   int   `json:"key_count"`
+		MemoryUsed int64 `json:"memory_used"`
+		Hits       int64 `json:"hits"`
+		Misses     int64 `json:"misses"`
+		Sets       int64 `json:"sets"`
+		Deletes    int64 `json:"deletes"`
+		Expired    int64 `json:"expired"`
+	} `json:"stats"`
+}
+
+// httpAddr returns the HTTP admin address derived from the TCP address.
+// Convention: HTTP port = TCP port - 1 (e.g., TCP 9091 -> HTTP 9090).
+func (c *Client) httpAddr() string {
+	host, portStr, err := net.SplitHostPort(c.addr)
+	if err != nil {
+		return "http://localhost:9090"
+	}
+	var port int
+	fmt.Sscanf(portStr, "%d", &port)
+	return fmt.Sprintf("http://%s:%d", host, port-1)
+}
+
+// httpGet performs an HTTP GET request to the admin API.
+func (c *Client) httpGet(path string) ([]byte, error) {
+	url := c.httpAddr() + path
+	req, err := newHTTPRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+	if c.apiKey != "" {
+		req.Header.Set("X-API-Key", c.apiKey)
+	}
+	return doHTTPRequest(req, c.timeout)
+}
+
+// httpPost performs an HTTP POST request to the admin API.
+func (c *Client) httpPost(path string, body interface{}) ([]byte, error) {
+	data, _ := json.Marshal(body)
+	url := c.httpAddr() + path
+	req, err := newHTTPRequest("POST", url, data)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.apiKey != "" {
+		req.Header.Set("X-API-Key", c.apiKey)
+	}
+	return doHTTPRequest(req, c.timeout)
+}
+
+// CacheGet retrieves a value from the cache by key.
+func (c *Client) CacheGet(key string) (*CacheEntry, error) {
+	data, err := c.httpGet("/cache/get?key=" + key)
+	if err != nil {
+		return nil, err
+	}
+	var entry CacheEntry
+	if err := json.Unmarshal(data, &entry); err != nil {
+		return nil, err
+	}
+	return &entry, nil
+}
+
+// CacheSet stores a key-value pair in the cache with optional TTL in milliseconds.
+func (c *Client) CacheSet(key string, value interface{}, ttlMs int64) error {
+	_, err := c.httpPost("/cache/set", map[string]interface{}{
+		"key":   key,
+		"value": value,
+		"ttl":   ttlMs,
+	})
+	return err
+}
+
+// CacheDel removes a key from the cache.
+func (c *Client) CacheDel(key string) (bool, error) {
+	data, err := c.httpPost("/cache/del", map[string]string{"key": key})
+	if err != nil {
+		return false, err
+	}
+	var result struct {
+		Deleted bool `json:"deleted"`
+	}
+	json.Unmarshal(data, &result)
+	return result.Deleted, nil
+}
+
+// CacheKeys returns all keys matching the given pattern.
+func (c *Client) CacheKeys(pattern string) ([]string, error) {
+	data, err := c.httpGet("/cache/keys?pattern=" + pattern)
+	if err != nil {
+		return nil, err
+	}
+	var result struct {
+		Keys []string `json:"keys"`
+	}
+	json.Unmarshal(data, &result)
+	return result.Keys, nil
+}
+
+// CacheExists checks if a key exists in the cache.
+func (c *Client) CacheExists(key string) (bool, error) {
+	data, err := c.httpGet("/cache/exists?key=" + key)
+	if err != nil {
+		return false, err
+	}
+	var result struct {
+		Exists bool `json:"exists"`
+	}
+	json.Unmarshal(data, &result)
+	return result.Exists, nil
+}
+
+// CacheExpire sets a new TTL on a key (milliseconds). Use 0 to remove TTL.
+func (c *Client) CacheExpire(key string, ttlMs int64) error {
+	_, err := c.httpPost("/cache/expire", map[string]interface{}{
+		"key": key,
+		"ttl": ttlMs,
+	})
+	return err
+}
+
+// CacheIncr atomically increments a numeric value and returns the new value.
+func (c *Client) CacheIncr(key string, delta int64) (int64, error) {
+	data, err := c.httpPost("/cache/incr", map[string]interface{}{
+		"key":   key,
+		"delta": delta,
+	})
+	if err != nil {
+		return 0, err
+	}
+	var result struct {
+		Value int64 `json:"value"`
+	}
+	json.Unmarshal(data, &result)
+	return result.Value, nil
+}
+
+// CacheFlush removes all entries from the cache.
+func (c *Client) CacheFlush() (int, error) {
+	data, err := c.httpPost("/cache/flush", nil)
+	if err != nil {
+		return 0, err
+	}
+	var result struct {
+		Removed int `json:"removed"`
+	}
+	json.Unmarshal(data, &result)
+	return result.Removed, nil
+}
+
+// CacheGetStats returns cache statistics.
+func (c *Client) CacheGetStats() (*CacheStats, error) {
+	data, err := c.httpGet("/cache/stats")
+	if err != nil {
+		return nil, err
+	}
+	var stats CacheStats
+	json.Unmarshal(data, &stats)
+	return &stats, nil
 }

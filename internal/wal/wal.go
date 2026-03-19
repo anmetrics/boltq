@@ -19,9 +19,10 @@ const (
 )
 
 type WALRecord struct {
-	Type    byte
-	Message *protocol.Message
-	MsgID   string
+	Type     byte
+	Message  *protocol.Message
+	MsgID    string
+	Metadata []byte // raw data for metadata records (exchange/binding)
 }
 
 const (
@@ -104,6 +105,11 @@ func (w *WAL) writeRecord(typ byte, data []byte) (int, error) {
 	return headerSize + totalDataLen, nil
 }
 
+// WriteMetadata appends a metadata record (e.g., exchange/binding) to the WAL.
+func (w *WAL) WriteMetadata(recordType byte, data []byte) (int, error) {
+	return w.writeRecord(recordType, data)
+}
+
 // ReadAllRecords reads all records from the WAL file (for recovery).
 func (w *WAL) ReadAllRecords() ([]*WALRecord, error) {
 	w.mu.Lock()
@@ -170,6 +176,9 @@ func (w *WAL) ReadAllRecords() ([]*WALRecord, error) {
 			}
 		case RecordAck:
 			records = append(records, &WALRecord{Type: typ, MsgID: string(data)})
+		default:
+			// Metadata records (exchange/binding declarations, etc.)
+			records = append(records, &WALRecord{Type: typ, Metadata: data})
 		}
 	}
 

@@ -16,6 +16,10 @@ type Metrics struct {
 	RaftApplyCount    int64 `json:"raft_apply_count"`
 	SnapshotCount     int64 `json:"snapshot_count"`
 	LeaderChanges     int64 `json:"leader_changes"`
+	CacheHits         int64 `json:"cache_hits"`
+	CacheMisses       int64 `json:"cache_misses"`
+	CacheSets         int64 `json:"cache_sets"`
+	CacheDeletes      int64 `json:"cache_deletes"`
 }
 
 var global = &Metrics{}
@@ -34,6 +38,10 @@ func (m *Metrics) IncDeadLetter()  { atomic.AddInt64(&m.DeadLetterCount, 1) }
 func (m *Metrics) IncRaftApply()   { atomic.AddInt64(&m.RaftApplyCount, 1) }
 func (m *Metrics) IncSnapshot()    { atomic.AddInt64(&m.SnapshotCount, 1) }
 func (m *Metrics) IncLeaderChange() { atomic.AddInt64(&m.LeaderChanges, 1) }
+func (m *Metrics) IncCacheHit()      { atomic.AddInt64(&m.CacheHits, 1) }
+func (m *Metrics) IncCacheMiss()     { atomic.AddInt64(&m.CacheMisses, 1) }
+func (m *Metrics) IncCacheSet()      { atomic.AddInt64(&m.CacheSets, 1) }
+func (m *Metrics) IncCacheDelete()   { atomic.AddInt64(&m.CacheDeletes, 1) }
 
 // Snapshot returns a copy of the current metrics.
 func (m *Metrics) Snapshot() Metrics {
@@ -47,6 +55,10 @@ func (m *Metrics) Snapshot() Metrics {
 		RaftApplyCount:    atomic.LoadInt64(&m.RaftApplyCount),
 		SnapshotCount:     atomic.LoadInt64(&m.SnapshotCount),
 		LeaderChanges:     atomic.LoadInt64(&m.LeaderChanges),
+		CacheHits:         atomic.LoadInt64(&m.CacheHits),
+		CacheMisses:       atomic.LoadInt64(&m.CacheMisses),
+		CacheSets:         atomic.LoadInt64(&m.CacheSets),
+		CacheDeletes:      atomic.LoadInt64(&m.CacheDeletes),
 	}
 }
 
@@ -85,7 +97,19 @@ func (m *Metrics) Prometheus() string {
 		promLine("boltq_snapshot_count", snap.SnapshotCount) +
 		"# HELP boltq_leader_changes Total leader changes\n" +
 		"# TYPE boltq_leader_changes counter\n" +
-		promLine("boltq_leader_changes", snap.LeaderChanges)
+		promLine("boltq_leader_changes", snap.LeaderChanges) +
+		"# HELP boltq_cache_hits Total cache hits\n" +
+		"# TYPE boltq_cache_hits counter\n" +
+		promLine("boltq_cache_hits", snap.CacheHits) +
+		"# HELP boltq_cache_misses Total cache misses\n" +
+		"# TYPE boltq_cache_misses counter\n" +
+		promLine("boltq_cache_misses", snap.CacheMisses) +
+		"# HELP boltq_cache_sets Total cache set operations\n" +
+		"# TYPE boltq_cache_sets counter\n" +
+		promLine("boltq_cache_sets", snap.CacheSets) +
+		"# HELP boltq_cache_deletes Total cache delete operations\n" +
+		"# TYPE boltq_cache_deletes counter\n" +
+		promLine("boltq_cache_deletes", snap.CacheDeletes)
 }
 
 func promLine(name string, val int64) string {

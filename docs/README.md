@@ -12,3 +12,4 @@
 8. **[Node.js SDK](./sdk-nodejs.md)** — Node.js client library reference and examples
 9. **[CLI Reference](./cli.md)** — Command-line tool usage
 10. **[Deployment](./deployment.md)** — Docker, Kubernetes, systemd, Nginx, production checklist
+11. **[Security](./security.md)** — Security features, API key auth, TLS encryption

@@ -52,6 +52,10 @@ Returns metrics in Prometheus text exposition format (no authentication required
 | `boltq_messages_nacked` | counter | Total number of messages negatively acknowledged |
 | `boltq_retry_count` | counter | Total number of message retries |
 | `boltq_dead_letter_count` | counter | Total number of messages sent to dead letter queues |
+| `boltq_cache_hits` | counter | Total cache hits |
+| `boltq_cache_misses` | counter | Total cache misses |
+| `boltq_cache_sets` | counter | Total cache set operations |
+| `boltq_cache_deletes` | counter | Total cache delete operations |
 
 ### Sample Output
 

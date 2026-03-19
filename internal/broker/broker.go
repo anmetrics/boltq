@@ -3,6 +3,7 @@ package broker
 import (
 	"bufio"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -50,9 +51,10 @@ type PendingMessage struct {
 
 // Broker is the central message broker that manages work queues and pub/sub topics.
 type Broker struct {
-	queues      map[string]*queue.Queue
+	queues      map[string]queue.MessageQueue
 	topics      map[string]*Topic
-	deadLetters map[string]*queue.Queue
+	deadLetters map[string]queue.MessageQueue
+	exchanges   map[string]*Exchange // exchange name -> Exchange
 	pending     map[string]*PendingMessage // message ID -> pending
 	delayed     []*protocol.Message        // messages waiting for delivery
 	durableSubs map[string]map[string]bool // topic -> subID -> isDurable
@@ -92,9 +94,10 @@ func New(cfg Config) *Broker {
 	spillDir := "./data/spill"
 
 	b := &Broker{
-		queues:              make(map[string]*queue.Queue),
+		queues:              make(map[string]queue.MessageQueue),
 		topics:              make(map[string]*Topic),
-		deadLetters:         make(map[string]*queue.Queue),
+		deadLetters:         make(map[string]queue.MessageQueue),
+		exchanges:           make(map[string]*Exchange),
 		pending:             make(map[string]*PendingMessage),
 		delayed:             make([]*protocol.Message, 0),
 		durableSubs:         make(map[string]map[string]bool),
@@ -105,6 +108,9 @@ func New(cfg Config) *Broker {
 		queueCap:            cfg.QueueCap,
 		compactionThreshold: cfg.CompactionThreshold,
 	}
+	// Create default exchange (direct type, routes by queue name)
+	b.exchanges[""] = &Exchange{Name: "", Type: ExchangeDirect, Durable: true}
+
 	if b.store != nil {
 		b.walSize = b.store.Size()
 	}
@@ -112,16 +118,16 @@ func New(cfg Config) *Broker {
 }
 
 // getOrCreateQueue returns an existing queue or creates a new one.
-func (b *Broker) getOrCreateQueue(name string) *queue.Queue {
+func (b *Broker) getOrCreateQueue(name string) queue.MessageQueue {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.getOrCreateQueueLocked(name)
 }
 
-func (b *Broker) getOrCreateQueueLocked(name string) *queue.Queue {
+func (b *Broker) getOrCreateQueueLocked(name string) queue.MessageQueue {
 	q, ok := b.queues[name]
 	if !ok {
-		q = queue.New(name, b.queueCap)
+		q = queue.NewPriority(name, b.queueCap)
 		b.queues[name] = q
 	}
 	return q
@@ -147,14 +153,14 @@ func (b *Broker) getOrCreateTopicLocked(name string) *Topic {
 }
 
 // getOrCreateDeadLetter returns the dead-letter queue for a given queue name.
-func (b *Broker) getOrCreateDeadLetter(name string) *queue.Queue {
+func (b *Broker) getOrCreateDeadLetter(name string) queue.MessageQueue {
 	dlName := name + "_dead_letter"
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.getOrCreateDeadLetterLocked(dlName)
 }
 
-func (b *Broker) getOrCreateDeadLetterLocked(dlName string) *queue.Queue {
+func (b *Broker) getOrCreateDeadLetterLocked(dlName string) queue.MessageQueue {
 	q, ok := b.deadLetters[dlName]
 	if !ok {
 		q = queue.New(dlName, b.queueCap)
@@ -200,6 +206,18 @@ func (b *Broker) Publish(topic string, msg *protocol.Message) error {
 	if !q.Push(msg) {
 		// Spill to disk if queue is full
 		return b.spillToDiskLocked(topic, msg)
+	}
+	return nil
+}
+
+// PublishConfirm publishes a message and ensures it is fsynced to disk before returning.
+// Used when publisher confirm mode is enabled.
+func (b *Broker) PublishConfirm(topic string, msg *protocol.Message) error {
+	if err := b.Publish(topic, msg); err != nil {
+		return err
+	}
+	if b.store != nil {
+		return b.store.Sync()
 	}
 	return nil
 }
@@ -567,7 +585,7 @@ func (b *Broker) reloadFromDisk() {
 	}
 }
 
-func (b *Broker) processSpillFile(topic string, q *queue.Queue, path string) {
+func (b *Broker) processSpillFile(topic string, q queue.MessageQueue, path string) {
 	f, err := os.Open(path)
 	if err != nil {
 		return
@@ -888,6 +906,7 @@ type FullState struct {
 	Delayed     []*protocol.Message            `json:"delayed,omitempty"`
 	Pending     map[string]*PendingMessage     `json:"pending,omitempty"`
 	DurableSubs map[string]map[string]bool     `json:"durable_subs,omitempty"`
+	Exchanges   map[string]*ExchangeState      `json:"exchanges,omitempty"`
 }
 
 // SnapshotFullState returns a snapshot of the entire broker state (for Raft snapshots).
@@ -933,6 +952,12 @@ func (b *Broker) SnapshotFullState() FullState {
 		state.DurableSubs[t] = m
 	}
 
+	state.Exchanges = make(map[string]*ExchangeState)
+	for name, ex := range b.exchanges {
+		s := ex.toState()
+		state.Exchanges[name] = &s
+	}
+
 	return state
 }
 
@@ -949,16 +974,16 @@ func (b *Broker) RestoreFullState(state FullState) {
 		q.Close()
 	}
 
-	b.queues = make(map[string]*queue.Queue)
+	b.queues = make(map[string]queue.MessageQueue)
 	for name, msgs := range state.Queues {
-		q := queue.New(name, b.queueCap)
+		q := queue.NewPriority(name, b.queueCap)
 		for _, msg := range msgs {
 			q.Push(msg)
 		}
 		b.queues[name] = q
 	}
 
-	b.deadLetters = make(map[string]*queue.Queue)
+	b.deadLetters = make(map[string]queue.MessageQueue)
 	for name, msgs := range state.DeadLetters {
 		q := queue.New(name, b.queueCap)
 		for _, msg := range msgs {
@@ -980,6 +1005,19 @@ func (b *Broker) RestoreFullState(state FullState) {
 		b.durableSubs = state.DurableSubs
 	} else {
 		b.durableSubs = make(map[string]map[string]bool)
+	}
+
+	b.exchanges = make(map[string]*Exchange)
+	b.exchanges[""] = &Exchange{Name: "", Type: ExchangeDirect, Durable: true}
+	if state.Exchanges != nil {
+		for name, es := range state.Exchanges {
+			b.exchanges[name] = &Exchange{
+				Name:     es.Name,
+				Type:     es.Type,
+				Durable:  es.Durable,
+				Bindings: es.Bindings,
+			}
+		}
 	}
 }
 
@@ -1004,6 +1042,225 @@ func (b *Broker) StorageMode() string {
 // CompactionThreshold returns the current compaction threshold.
 func (b *Broker) CompactionThreshold() int64 {
 	return b.compactionThreshold
+}
+
+// ExchangeDeclare creates a new exchange or asserts an existing one matches.
+func (b *Broker) ExchangeDeclare(name string, typ ExchangeType, durable bool) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if ex, ok := b.exchanges[name]; ok {
+		if ex.Type != typ {
+			return fmt.Errorf("exchange %q already exists with type %s", name, ex.Type)
+		}
+		return nil // idempotent
+	}
+
+	b.exchanges[name] = &Exchange{
+		Name:    name,
+		Type:    typ,
+		Durable: durable,
+	}
+
+	if durable && b.store != nil {
+		data, _ := json.Marshal(b.exchanges[name].toState())
+		b.store.WriteMetadata(walRecordExchangeDeclare, data)
+	}
+	return nil
+}
+
+// ExchangeDelete removes an exchange and all its bindings.
+func (b *Broker) ExchangeDelete(name string) error {
+	if name == "" {
+		return fmt.Errorf("cannot delete the default exchange")
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if _, ok := b.exchanges[name]; !ok {
+		return fmt.Errorf("exchange %q not found", name)
+	}
+	delete(b.exchanges, name)
+
+	if b.store != nil {
+		data, _ := json.Marshal(map[string]string{"name": name})
+		b.store.WriteMetadata(walRecordExchangeDelete, data)
+	}
+	return nil
+}
+
+// BindQueue binds a queue to an exchange with the given binding key.
+func (b *Broker) BindQueue(exchange, queueName, bindingKey string, headers map[string]string, matchAll bool) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	ex, ok := b.exchanges[exchange]
+	if !ok {
+		return fmt.Errorf("exchange %q not found", exchange)
+	}
+
+	binding := &Binding{
+		Exchange:   exchange,
+		Queue:      queueName,
+		BindingKey: bindingKey,
+		Headers:    headers,
+		MatchAll:   matchAll,
+	}
+
+	ex.mu.Lock()
+	ex.Bindings = append(ex.Bindings, binding)
+	ex.mu.Unlock()
+
+	// Ensure the queue exists
+	b.getOrCreateQueueLocked(queueName)
+
+	if b.store != nil {
+		data, _ := json.Marshal(binding)
+		b.store.WriteMetadata(walRecordBindQueue, data)
+	}
+	return nil
+}
+
+// UnbindQueue removes a binding from an exchange.
+func (b *Broker) UnbindQueue(exchange, queueName, bindingKey string) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	ex, ok := b.exchanges[exchange]
+	if !ok {
+		return fmt.Errorf("exchange %q not found", exchange)
+	}
+
+	ex.mu.Lock()
+	for i, bind := range ex.Bindings {
+		if bind.Queue == queueName && bind.BindingKey == bindingKey {
+			ex.Bindings = append(ex.Bindings[:i], ex.Bindings[i+1:]...)
+			break
+		}
+	}
+	ex.mu.Unlock()
+
+	if b.store != nil {
+		data, _ := json.Marshal(map[string]string{
+			"exchange":    exchange,
+			"queue":       queueName,
+			"binding_key": bindingKey,
+		})
+		b.store.WriteMetadata(walRecordUnbindQueue, data)
+	}
+	return nil
+}
+
+// PublishExchange routes a message through an exchange to all matching bound queues.
+func (b *Broker) PublishExchange(exchangeName, routingKey string, msg *protocol.Message) error {
+	b.mu.RLock()
+	ex, ok := b.exchanges[exchangeName]
+	b.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("exchange %q not found", exchangeName)
+	}
+
+	msg.Exchange = exchangeName
+	msg.RoutingKey = routingKey
+
+	// Default exchange: route directly to queue named by routing key
+	if exchangeName == "" {
+		return b.Publish(routingKey, msg)
+	}
+
+	queues := ex.route(routingKey, msg.Headers)
+	if len(queues) == 0 {
+		return nil // no matching bindings, message is dropped
+	}
+
+	// Publish a clone to each matched queue (each gets its own ID for independent ACK)
+	for _, qName := range queues {
+		clone := *msg
+		clone.ID = protocol.GenerateID()
+		clone.Topic = qName
+		if err := b.Publish(qName, &clone); err != nil {
+			return fmt.Errorf("publish to queue %s: %w", qName, err)
+		}
+	}
+	return nil
+}
+
+// toState converts an Exchange to its serializable form.
+func (e *Exchange) toState() ExchangeState {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return ExchangeState{
+		Name:     e.Name,
+		Type:     e.Type,
+		Durable:  e.Durable,
+		Bindings: e.Bindings,
+	}
+}
+
+// WAL record types for exchange metadata.
+const (
+	walRecordExchangeDeclare byte = 0x03
+	walRecordExchangeDelete  byte = 0x04
+	walRecordBindQueue       byte = 0x05
+	walRecordUnbindQueue     byte = 0x06
+)
+
+// ReplayMetadata replays a WAL metadata record during recovery to restore exchange/binding state.
+func (b *Broker) ReplayMetadata(recordType byte, data []byte) {
+	switch recordType {
+	case walRecordExchangeDeclare:
+		var es ExchangeState
+		if json.Unmarshal(data, &es) == nil {
+			b.mu.Lock()
+			b.exchanges[es.Name] = &Exchange{
+				Name:     es.Name,
+				Type:     es.Type,
+				Durable:  es.Durable,
+				Bindings: es.Bindings,
+			}
+			b.mu.Unlock()
+		}
+	case walRecordExchangeDelete:
+		var info struct {
+			Name string `json:"name"`
+		}
+		if json.Unmarshal(data, &info) == nil {
+			b.mu.Lock()
+			delete(b.exchanges, info.Name)
+			b.mu.Unlock()
+		}
+	case walRecordBindQueue:
+		var binding Binding
+		if json.Unmarshal(data, &binding) == nil {
+			b.mu.Lock()
+			if ex, ok := b.exchanges[binding.Exchange]; ok {
+				ex.mu.Lock()
+				ex.Bindings = append(ex.Bindings, &binding)
+				ex.mu.Unlock()
+			}
+			b.mu.Unlock()
+		}
+	case walRecordUnbindQueue:
+		var info struct {
+			Exchange   string `json:"exchange"`
+			Queue      string `json:"queue"`
+			BindingKey string `json:"binding_key"`
+		}
+		if json.Unmarshal(data, &info) == nil {
+			b.mu.Lock()
+			if ex, ok := b.exchanges[info.Exchange]; ok {
+				ex.mu.Lock()
+				for i, bind := range ex.Bindings {
+					if bind.Queue == info.Queue && bind.BindingKey == info.BindingKey {
+						ex.Bindings = append(ex.Bindings[:i], ex.Bindings[i+1:]...)
+						break
+					}
+				}
+				ex.mu.Unlock()
+			}
+			b.mu.Unlock()
+		}
+	}
 }
 
 // Close closes all queues.

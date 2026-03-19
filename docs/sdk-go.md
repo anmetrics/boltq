@@ -133,6 +133,73 @@ Negatively acknowledge a message (triggers retry).
 err := client.Nack(msg.ID)
 ```
 
+### Priority Queue
+
+Publish a message with a priority level (0-9, higher = more urgent). Higher-priority messages are consumed first.
+
+```go
+// Publish with priority (0-9, higher = more urgent)
+id, err := client.Publish("jobs", payload, headers, &boltq.PublishOptions{
+    Priority: 9, // highest priority
+})
+```
+
+Messages with no priority default to 0. Priority only affects consumption order within the same queue.
+
+### Publisher Confirm
+
+Enable publisher confirm mode to receive sequence numbers for tracking delivery.
+
+```go
+// Enable publisher confirm mode
+err := client.EnableConfirm()
+
+// After enabling, publish responses include seq_no for tracking
+id, err := client.Publish("jobs", payload, headers, nil)
+// The returned id can be correlated with server-side delivery confirmations
+```
+
+### Exchange Routing
+
+BoltQ supports exchange-based routing with four exchange types: `direct`, `fanout`, `topic`, and `headers`.
+
+**Declare an exchange:**
+
+```go
+err := client.ExchangeDeclare("logs", "topic", true) // name, type, durable
+```
+
+**Bind a queue to an exchange:**
+
+```go
+err := client.BindQueue("logs", "error_handler", "log.error.*")
+```
+
+**Publish to an exchange:**
+
+```go
+id, err := client.PublishToExchange("logs", "log.error.auth", map[string]interface{}{
+    "message": "Failed login attempt",
+    "user":    "admin",
+}, nil) // headers optional
+```
+
+**Exchange types:**
+
+| Type | Routing behavior |
+|------|-----------------|
+| `direct` | Routes to queues whose binding key exactly matches the routing key |
+| `fanout` | Routes to all bound queues (ignores routing key) |
+| `topic` | Routes using dot-separated patterns with `*` (one word) and `#` (zero or more words) |
+| `headers` | Routes based on message header matching |
+
+**Unbind and delete:**
+
+```go
+err := client.UnbindQueue("logs", "error_handler", "log.error.*")
+err = client.ExchangeDelete("logs")
+```
+
 ### Stats
 
 Get broker statistics.
@@ -306,4 +373,76 @@ func main() {
 
     wg.Wait()
 }
+```
+
+---
+
+## Cache / KV Store
+
+The Go SDK provides cache methods that communicate with the server over HTTP.
+
+### CacheSet
+
+```go
+err := client.CacheSet("user:123:session", map[string]any{
+    "token": "abc123",
+    "role":  "admin",
+}, 3600000) // TTL: 1 hour in ms, 0 = no expiry
+```
+
+### CacheGet
+
+```go
+entry, err := client.CacheGet("user:123:session")
+if err != nil {
+    // key not found or error
+}
+fmt.Println(string(entry.Value)) // raw JSON
+fmt.Println(entry.TTL)           // remaining TTL in ms, -1 = no expiry
+```
+
+### CacheDel
+
+```go
+deleted, err := client.CacheDel("user:123:session")
+```
+
+### CacheKeys
+
+```go
+keys, err := client.CacheKeys("user:*")
+// keys = ["user:123:session", "user:456:session"]
+```
+
+### CacheExists
+
+```go
+exists, err := client.CacheExists("user:123:session")
+```
+
+### CacheIncr
+
+```go
+newVal, err := client.CacheIncr("rate:api:calls", 1)
+// newVal = 42
+```
+
+### CacheExpire
+
+```go
+err := client.CacheExpire("user:123:session", 60000) // 60 seconds
+```
+
+### CacheFlush
+
+```go
+removed, err := client.CacheFlush()
+```
+
+### CacheGetStats
+
+```go
+stats, err := client.CacheGetStats()
+fmt.Printf("Keys: %d, Hits: %d, Misses: %d\n",
+    stats.Stats.KeyCount, stats.Stats.Hits, stats.Stats.Misses)
 ```

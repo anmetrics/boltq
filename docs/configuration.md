@@ -36,6 +36,12 @@ Pass the config file path with the `-config` flag:
   "performance": {
     "worker_pool": 16
   },
+  "cache": {
+    "enabled": true,
+    "max_keys": 0,
+    "default_ttl_ms": 0,
+    "cleanup_sec": 10
+  },
   "security": {
     "api_key": ""
   }
@@ -83,6 +89,15 @@ Pass the config file path with the `-config` flag:
 - Each message pointer is 8 bytes, so 1M capacity = ~8MB per queue
 - Consider available memory when setting high capacities
 
+### cache
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `true` | Enable the in-memory KV store |
+| `max_keys` | int | `0` | Maximum number of keys. 0 = unlimited |
+| `default_ttl_ms` | int64 | `0` | Default TTL for entries in milliseconds. 0 = no expiry |
+| `cleanup_sec` | int | `10` | Interval in seconds for expired key cleanup |
+
 ### performance
 
 | Field | Type | Default | Description |
@@ -106,6 +121,8 @@ Environment variables override config file values.
 | `BOLTQ_DATA_DIR` | `storage.data_dir` | WAL data directory |
 | `BOLTQ_STORAGE_COMPACTION_THRESHOLD` | `storage.compaction_threshold` | WAL size threshold in bytes |
 | `BOLTQ_API_KEY` | `security.api_key` | API authentication key |
+| `BOLTQ_CACHE_ENABLED` | `cache.enabled` | Enable KV store (`true`/`false`) |
+| `BOLTQ_CACHE_MAX_KEYS` | `cache.max_keys` | Maximum cache keys (0 = unlimited) |
 
 ### Examples
 

@@ -9,6 +9,21 @@ import (
 
 const defaultCapacity = 1 << 20 // 1M messages
 
+// MessageQueue is the interface that both Queue and PriorityQueue implement.
+type MessageQueue interface {
+	Push(msg *protocol.Message) bool
+	Pop() *protocol.Message
+	TryPop() *protocol.Message
+	Size() int64
+	Name() string
+	Capacity() int64
+	IsFull() bool
+	Close()
+	Purge() int64
+	Drain() []*protocol.Message
+	HasMessage(id string) bool
+}
+
 // Queue is a high-performance, lock-free message queue backed by a ring buffer.
 type Queue struct {
 	name     string
@@ -159,6 +174,36 @@ func (q *Queue) HasMessage(id string) bool {
 		}
 	}
 	return false
+}
+
+// pushInternal adds a message without acquiring q.mu. Caller must hold the lock.
+func (q *Queue) pushInternal(msg *protocol.Message) bool {
+	if atomic.LoadInt64(&q.size) >= int64(len(q.buf)) {
+		return false
+	}
+	pos := q.head & q.mask
+	q.buf[pos] = msg
+	q.head++
+	atomic.AddInt64(&q.size, 1)
+	return true
+}
+
+// tryPopInternal pops a message without acquiring q.mu. Caller must hold the lock.
+func (q *Queue) tryPopInternal() *protocol.Message {
+	if atomic.LoadInt64(&q.size) == 0 {
+		return nil
+	}
+	pos := q.tail & q.mask
+	msg := q.buf[pos]
+	q.buf[pos] = nil
+	q.tail++
+	atomic.AddInt64(&q.size, -1)
+	return msg
+}
+
+// sizeInternal returns the current size without locking.
+func (q *Queue) sizeInternal() int64 {
+	return atomic.LoadInt64(&q.size)
 }
 
 func nextPowerOfTwo(n int) int {

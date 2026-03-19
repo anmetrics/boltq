@@ -24,6 +24,7 @@ High-performance message queue server written in Go. Built for low latency, high
 - **Prometheus Metrics** — `/metrics` endpoint
 - **API Key Auth** — optional authentication
 - **TLS Encryption** — full end-to-end encryption for TCP and HTTP
+- **In-Memory KV Store** — built-in cache with TTL, pattern matching, atomic increment
 - **Lock-free ring buffer** — high-performance internal queue
 
 ## Performance

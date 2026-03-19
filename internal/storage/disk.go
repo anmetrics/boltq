@@ -71,3 +71,11 @@ func (d *DiskStorage) Rewrite(msgs []*protocol.Message) error {
 func (d *DiskStorage) Size() int64 {
 	return d.wal.Size()
 }
+
+func (d *DiskStorage) Sync() error {
+	return d.wal.Sync()
+}
+
+func (d *DiskStorage) WriteMetadata(recordType byte, data []byte) (int, error) {
+	return d.wal.WriteMetadata(recordType, data)
+}

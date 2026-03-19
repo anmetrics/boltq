@@ -84,6 +84,26 @@ func (f *BrokerFSM) Apply(log *raft.Log) interface{} {
 		f.broker.UnregisterDurableSub(cmd.Topic, cmd.SubscriberID)
 		return &ApplyResponse{}
 
+	case CmdRaftExchangeDeclare:
+		err := f.broker.ExchangeDeclare(cmd.ExchangeName, broker.ExchangeType(cmd.ExchangeType), cmd.Durable)
+		return &ApplyResponse{Error: err}
+
+	case CmdRaftExchangeDelete:
+		err := f.broker.ExchangeDelete(cmd.ExchangeName)
+		return &ApplyResponse{Error: err}
+
+	case CmdRaftBindQueue:
+		err := f.broker.BindQueue(cmd.ExchangeName, cmd.QueueName, cmd.BindingKey, cmd.MatchHeaders, cmd.MatchAll)
+		return &ApplyResponse{Error: err}
+
+	case CmdRaftUnbindQueue:
+		err := f.broker.UnbindQueue(cmd.ExchangeName, cmd.QueueName, cmd.BindingKey)
+		return &ApplyResponse{Error: err}
+
+	case CmdRaftPublishExchange:
+		err := f.broker.PublishExchange(cmd.ExchangeName, cmd.RoutingKey, cmd.Message)
+		return &ApplyResponse{Error: err}
+
 	default:
 		return &ApplyResponse{Error: fmt.Errorf("unknown command type: %d", cmd.Type)}
 	}

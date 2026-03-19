@@ -21,6 +21,9 @@ type Message struct {
 	TTL           int64             `json:"ttl,omitempty"`        // time to live in nanoseconds
 	DeliverAt     int64             `json:"deliver_at,omitempty"` // UnixNano
 	ExpiresAt     int64             `json:"expires_at,omitempty"` // UnixNano
+	Priority      int               `json:"priority,omitempty"`   // 0-9, higher = more urgent
+	Exchange      string            `json:"exchange,omitempty"`
+	RoutingKey    string            `json:"routing_key,omitempty"`
 }
 
 // NewMessage creates a new message with a generated ID and current timestamp.
@@ -34,6 +37,11 @@ func NewMessage(topic string, payload []byte, headers map[string]string) *Messag
 		Retry:     0,
 		MaxRetry:  5,
 	}
+}
+
+// GenerateID creates a random hex-encoded message ID.
+func GenerateID() string {
+	return generateID()
 }
 
 func generateID() string {

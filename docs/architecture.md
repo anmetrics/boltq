@@ -210,3 +210,43 @@ BoltQ uses Go's concurrency primitives:
 5. **Buffered WAL writes**: 64KB write buffer amortizes syscall overhead. Trade-off: up to 64KB of recent data may be lost on crash without explicit `Sync()`.
 
 6. **Standard library only**: Zero external dependencies reduces supply chain risk and simplifies deployment. No framework overhead for HTTP serving.
+
+## Exchange Routing
+
+BoltQ supports exchange-based message routing, allowing producers to publish to an exchange rather than directly to a queue. The exchange routes messages to bound queues based on its type.
+
+**Exchange Types:**
+
+| Type | Routing Rule |
+|------|-------------|
+| `direct` | Exact match between routing key and binding key |
+| `fanout` | Broadcast to all bound queues (routing key ignored) |
+| `topic` | Pattern match with dot-separated segments; `*` matches one word, `#` matches zero or more |
+| `headers` | Match on message headers instead of routing key; supports `match_all` (AND) or match-any (OR) |
+
+**Binding and Routing Model:**
+- Queues are bound to exchanges with a binding key
+- A single queue can bind to multiple exchanges with different keys
+- An exchange can have multiple bindings to different queues
+- When a message is published to an exchange, it evaluates all bindings and pushes to matching queues
+
+**Default Exchange:**
+- Messages published via `POST /publish` bypass exchange routing entirely, maintaining full backward compatibility
+- Exchange routing is only used when publishing via `POST /exchange/publish`
+
+## Priority Queue
+
+BoltQ supports 10 priority levels (0-9) per queue. Internally, each queue maintains a priority ring buffer array — one ring buffer per priority level. On consume, the broker drains from the highest priority level first, falling through to lower levels.
+
+```
+Priority Ring Buffer Array:
+┌─────────────────────────────┐
+│ Priority 9 (highest) │ ──▶ [Ring Buffer] ──▶ consumed first
+│ Priority 8            │ ──▶ [Ring Buffer]
+│ ...                   │
+│ Priority 1            │ ──▶ [Ring Buffer]
+│ Priority 0 (default)  │ ──▶ [Ring Buffer] ──▶ consumed last
+└─────────────────────────────┘
+```
+
+Messages published without a priority field default to priority 0. The total capacity is shared across all priority levels.

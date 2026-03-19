@@ -20,6 +20,12 @@ const (
 	CmdClusterJoin   byte = 0x10
 	CmdClusterLeave  byte = 0x11
 	CmdClusterStatus byte = 0x12
+	CmdConfirmSelect   byte = 0x13
+	CmdExchangeDeclare byte = 0x14
+	CmdExchangeDelete  byte = 0x15
+	CmdBindQueue       byte = 0x16
+	CmdUnbindQueue     byte = 0x17
+	CmdPublishExchange byte = 0x18
 )
 
 // Response status bytes.

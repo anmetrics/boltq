@@ -20,6 +20,12 @@ const CMD_PREFETCH      = 0x09;
 const CMD_CLUSTER_JOIN   = 0x10;
 const CMD_CLUSTER_LEAVE  = 0x11;
 const CMD_CLUSTER_STATUS = 0x12;
+const CMD_CONFIRM_SELECT   = 0x13;
+const CMD_EXCHANGE_DECLARE = 0x14;
+const CMD_EXCHANGE_DELETE  = 0x15;
+const CMD_BIND_QUEUE       = 0x16;
+const CMD_UNBIND_QUEUE     = 0x17;
+const CMD_PUBLISH_EXCHANGE = 0x18;
 
 // Response status bytes
 const STATUS_OK         = 0x00;
@@ -158,6 +164,7 @@ export class BoltQClient extends EventEmitter {
       headers: headers || {},
       delay: options.delay || 0,
       ttl: options.ttl || 0,
+      priority: options.priority || 0,
     });
   }
 
@@ -178,6 +185,7 @@ export class BoltQClient extends EventEmitter {
       headers: headers || {},
       delay: options.delay || 0,
       ttl: options.ttl || 0,
+      priority: options.priority || 0,
     });
   }
 
@@ -332,6 +340,87 @@ export class BoltQClient extends EventEmitter {
   }
 
   // ---------------------------------------------------------------------------
+  // Publisher Confirm & Exchange Routing
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Enable publisher confirm mode.
+   * @returns {Promise<void>}
+   */
+  async enableConfirm() {
+    await this._command(CMD_CONFIRM_SELECT, {});
+  }
+
+  /**
+   * Declare an exchange.
+   * @param {string} name
+   * @param {'direct'|'fanout'|'topic'|'headers'} [type='direct']
+   * @param {boolean} [durable=false]
+   * @returns {Promise<void>}
+   */
+  async exchangeDeclare(name, type = 'direct', durable = false) {
+    await this._command(CMD_EXCHANGE_DECLARE, { name, type, durable });
+  }
+
+  /**
+   * Delete an exchange.
+   * @param {string} name
+   * @returns {Promise<void>}
+   */
+  async exchangeDelete(name) {
+    await this._command(CMD_EXCHANGE_DELETE, { name });
+  }
+
+  /**
+   * Bind a queue to an exchange.
+   * @param {string} exchange
+   * @param {string} queue
+   * @param {string} [bindingKey='']
+   * @param {object} [options]
+   * @param {Record<string,string>} [options.headers]
+   * @param {boolean} [options.matchAll]
+   * @returns {Promise<void>}
+   */
+  async bindQueue(exchange, queue, bindingKey = '', options = {}) {
+    await this._command(CMD_BIND_QUEUE, {
+      exchange, queue, binding_key: bindingKey,
+      headers: options.headers || null,
+      match_all: options.matchAll || false,
+    });
+  }
+
+  /**
+   * Unbind a queue from an exchange.
+   * @param {string} exchange
+   * @param {string} queue
+   * @param {string} [bindingKey='']
+   * @returns {Promise<void>}
+   */
+  async unbindQueue(exchange, queue, bindingKey = '') {
+    await this._command(CMD_UNBIND_QUEUE, { exchange, queue, binding_key: bindingKey });
+  }
+
+  /**
+   * Publish a message to an exchange with a routing key.
+   * @param {string} exchange
+   * @param {string} routingKey
+   * @param {any} payload
+   * @param {Record<string,string>} [headers]
+   * @param {object} [options]
+   * @param {number} [options.priority] - Priority 0-9
+   * @returns {Promise<{id: string}>}
+   */
+  async publishToExchange(exchange, routingKey, payload, headers, options = {}) {
+    return this._command(CMD_PUBLISH_EXCHANGE, {
+      exchange,
+      routing_key: routingKey,
+      payload: typeof payload === 'string' ? payload : JSON.stringify(payload),
+      headers: headers || {},
+      priority: options.priority || 0,
+    });
+  }
+
+  // ---------------------------------------------------------------------------
   // Internal
   // ---------------------------------------------------------------------------
 
@@ -473,6 +562,126 @@ export class BoltQClient extends EventEmitter {
           });
       }, this.reconnectInterval);
     }
+  }
+}
+
+  // ---------------------------------------------------------------------------
+  // Cache / KV Store (HTTP-based)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Returns the HTTP admin base URL derived from TCP host/port.
+   * Convention: HTTP port = TCP port - 1 (e.g., TCP 9091 -> HTTP 9090).
+   * @returns {string}
+   */
+  get _httpBase() {
+    return `http://${this.host}:${this.port - 1}`;
+  }
+
+  /**
+   * Perform an HTTP request to the admin API.
+   * @param {string} method
+   * @param {string} path
+   * @param {object} [body]
+   * @returns {Promise<any>}
+   */
+  async _httpRequest(method, path, body) {
+    const url = `${this._httpBase}${path}`;
+    const headers = { 'Content-Type': 'application/json' };
+    if (this.apiKey) headers['X-API-Key'] = this.apiKey;
+
+    const opts = { method, headers };
+    if (body && method !== 'GET') {
+      opts.body = JSON.stringify(body);
+    }
+
+    const res = await fetch(url, opts);
+    const data = await res.json();
+    if (!res.ok) throw new BoltQError(data.error || `HTTP ${res.status}`, 'HTTP_ERROR', data);
+    return data;
+  }
+
+  /**
+   * Get a value from cache.
+   * @param {string} key
+   * @returns {Promise<{key: string, value: any, ttl: number, created_at: number}>}
+   */
+  async cacheGet(key) {
+    return this._httpRequest('GET', `/cache/get?key=${encodeURIComponent(key)}`);
+  }
+
+  /**
+   * Set a key-value pair in cache.
+   * @param {string} key
+   * @param {any} value
+   * @param {number} [ttl=0] - TTL in milliseconds, 0 = no expiry
+   * @returns {Promise<{status: string, key: string}>}
+   */
+  async cacheSet(key, value, ttl = 0) {
+    return this._httpRequest('POST', '/cache/set', { key, value, ttl });
+  }
+
+  /**
+   * Delete a key from cache.
+   * @param {string} key
+   * @returns {Promise<{status: string, deleted: boolean}>}
+   */
+  async cacheDel(key) {
+    return this._httpRequest('POST', '/cache/del', { key });
+  }
+
+  /**
+   * List keys matching a pattern.
+   * @param {string} [pattern='*']
+   * @returns {Promise<{keys: string[], count: number}>}
+   */
+  async cacheKeys(pattern = '*') {
+    return this._httpRequest('GET', `/cache/keys?pattern=${encodeURIComponent(pattern)}`);
+  }
+
+  /**
+   * Check if a key exists.
+   * @param {string} key
+   * @returns {Promise<{key: string, exists: boolean}>}
+   */
+  async cacheExists(key) {
+    return this._httpRequest('GET', `/cache/exists?key=${encodeURIComponent(key)}`);
+  }
+
+  /**
+   * Set TTL on an existing key (milliseconds). Use 0 to remove TTL.
+   * @param {string} key
+   * @param {number} ttl
+   * @returns {Promise<{status: string, key: string, found: boolean}>}
+   */
+  async cacheExpire(key, ttl) {
+    return this._httpRequest('POST', '/cache/expire', { key, ttl });
+  }
+
+  /**
+   * Atomically increment a numeric value. Creates key if not exists.
+   * @param {string} key
+   * @param {number} [delta=1]
+   * @returns {Promise<{key: string, value: number}>}
+   */
+  async cacheIncr(key, delta = 1) {
+    return this._httpRequest('POST', '/cache/incr', { key, delta });
+  }
+
+  /**
+   * Flush all cache entries.
+   * @returns {Promise<{status: string, removed: number}>}
+   */
+  async cacheFlush() {
+    return this._httpRequest('POST', '/cache/flush');
+  }
+
+  /**
+   * Get cache statistics.
+   * @returns {Promise<{enabled: boolean, stats: object}>}
+   */
+  async cacheStats() {
+    return this._httpRequest('GET', '/cache/stats');
   }
 }
 

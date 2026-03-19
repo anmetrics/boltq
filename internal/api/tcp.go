@@ -102,6 +102,8 @@ func (s *TCPServer) handleConn(conn net.Conn) {
 	authenticated := s.apiKey == "" // auto-authenticated if no key configured
 	prefetch := 0                  // 0 means no limit
 	unackedCount := 0
+	confirmMode := false
+	nextSeqNo := uint64(0)
 
 	var writeMu sync.Mutex
 	for {
@@ -128,7 +130,7 @@ func (s *TCPServer) handleConn(conn net.Conn) {
 			return
 		}
 
-		resp := s.dispatch(frame, &authenticated, &prefetch, &unackedCount, writer, &writeMu)
+		resp := s.dispatch(frame, &authenticated, &prefetch, &unackedCount, &confirmMode, &nextSeqNo, writer, &writeMu)
 
 		writeMu.Lock()
 		if err := protocol.WriteFrame(writer, resp); err != nil {
@@ -145,7 +147,7 @@ func (s *TCPServer) handleConn(conn net.Conn) {
 	}
 }
 
-func (s *TCPServer) dispatch(frame protocol.Frame, authenticated *bool, prefetch *int, unackedCount *int, writer *bufio.Writer, writeMu *sync.Mutex) protocol.Frame {
+func (s *TCPServer) dispatch(frame protocol.Frame, authenticated *bool, prefetch *int, unackedCount *int, confirmMode *bool, nextSeqNo *uint64, writer *bufio.Writer, writeMu *sync.Mutex) protocol.Frame {
 	switch frame.Command {
 	case protocol.CmdAuth:
 		return s.handleAuth(frame, authenticated)
@@ -153,10 +155,12 @@ func (s *TCPServer) dispatch(frame protocol.Frame, authenticated *bool, prefetch
 		return s.handlePing()
 	case protocol.CmdPrefetch:
 		return s.handlePrefetchTCP(frame, prefetch)
+	case protocol.CmdConfirmSelect:
+		return s.handleConfirmSelect(confirmMode)
 	case protocol.CmdPublish:
-		return s.handlePublishTCP(frame)
+		return s.handlePublishTCP(frame, confirmMode, nextSeqNo)
 	case protocol.CmdPublishTopic:
-		return s.handlePublishTopicTCP(frame)
+		return s.handlePublishTopicTCP(frame, confirmMode, nextSeqNo)
 	case protocol.CmdConsume:
 		return s.handleConsumeTCP(frame, prefetch, unackedCount, writer, writeMu)
 	case protocol.CmdAck:
@@ -165,6 +169,16 @@ func (s *TCPServer) dispatch(frame protocol.Frame, authenticated *bool, prefetch
 		return s.handleNackTCP(frame, unackedCount)
 	case protocol.CmdStats:
 		return s.handleStatsTCP()
+	case protocol.CmdExchangeDeclare:
+		return s.handleExchangeDeclareTCP(frame)
+	case protocol.CmdExchangeDelete:
+		return s.handleExchangeDeleteTCP(frame)
+	case protocol.CmdBindQueue:
+		return s.handleBindQueueTCP(frame)
+	case protocol.CmdUnbindQueue:
+		return s.handleUnbindQueueTCP(frame)
+	case protocol.CmdPublishExchange:
+		return s.handlePublishExchangeTCP(frame, confirmMode, nextSeqNo)
 	case protocol.CmdClusterJoin:
 		return s.handleClusterJoinTCP(frame)
 	case protocol.CmdClusterLeave:
@@ -220,19 +234,29 @@ func (s *TCPServer) handlePrefetchTCP(frame protocol.Frame, prefetch *int) proto
 	return s.okFrame([]byte(`{"status":"ok"}`))
 }
 
+// --- CONFIRM SELECT ---
+
+func (s *TCPServer) handleConfirmSelect(confirmMode *bool) protocol.Frame {
+	*confirmMode = true
+	return s.okFrame([]byte(`{"status":"ok"}`))
+}
+
 // --- Messaging types ---
 
 type publishRequest struct {
-	Topic   string            `json:"topic"`
-	Payload json.RawMessage   `json:"payload"`
-	Headers map[string]string `json:"headers"`
-	Delay   int64             `json:"delay"`
-	TTL     int64             `json:"ttl"`
+	Topic    string            `json:"topic"`
+	Payload  json.RawMessage   `json:"payload"`
+	Headers  map[string]string `json:"headers"`
+	Delay    int64             `json:"delay"`
+	TTL      int64             `json:"ttl"`
+	Priority int               `json:"priority"`
 }
 
 type publishResponse struct {
 	ID    string `json:"id"`
 	Topic string `json:"topic"`
+	SeqNo uint64 `json:"seq_no,omitempty"`
+	Ack   *bool  `json:"ack,omitempty"`
 }
 
 type consumeResponse struct {
@@ -250,7 +274,7 @@ func newMessage(topic string, payload json.RawMessage, headers map[string]string
 
 // --- PUBLISH ---
 
-func (s *TCPServer) handlePublishTCP(frame protocol.Frame) protocol.Frame {
+func (s *TCPServer) handlePublishTCP(frame protocol.Frame, confirmMode *bool, nextSeqNo *uint64) protocol.Frame {
 	var req publishRequest
 	if err := json.Unmarshal(frame.Payload, &req); err != nil {
 		return s.errorFrame("invalid json: " + err.Error())
@@ -262,22 +286,36 @@ func (s *TCPServer) handlePublishTCP(frame protocol.Frame) protocol.Frame {
 	msg := newMessage(req.Topic, req.Payload, req.Headers)
 	msg.Delay = req.Delay
 	msg.TTL = req.TTL
+	msg.Priority = req.Priority
 
-	if err := s.broker.Publish(req.Topic, msg); err != nil {
-		if nle, ok := cluster.IsNotLeaderError(err); ok {
+	var publishErr error
+	if *confirmMode {
+		publishErr = s.broker.PublishConfirm(req.Topic, msg)
+	} else {
+		publishErr = s.broker.Publish(req.Topic, msg)
+	}
+	if publishErr != nil {
+		if nle, ok := cluster.IsNotLeaderError(publishErr); ok {
 			return s.notLeaderFrame(nle)
 		}
-		return s.errorFrame(err.Error())
+		return s.errorFrame(publishErr.Error())
 	}
 
 	s.metrics.IncPublished()
-	data, _ := json.Marshal(publishResponse{ID: msg.ID, Topic: msg.Topic})
+	resp := publishResponse{ID: msg.ID, Topic: msg.Topic}
+	if *confirmMode {
+		*nextSeqNo++
+		resp.SeqNo = *nextSeqNo
+		ack := true
+		resp.Ack = &ack
+	}
+	data, _ := json.Marshal(resp)
 	return s.okFrame(data)
 }
 
 // --- PUBLISH TOPIC ---
 
-func (s *TCPServer) handlePublishTopicTCP(frame protocol.Frame) protocol.Frame {
+func (s *TCPServer) handlePublishTopicTCP(frame protocol.Frame, confirmMode *bool, nextSeqNo *uint64) protocol.Frame {
 	var req publishRequest
 	if err := json.Unmarshal(frame.Payload, &req); err != nil {
 		return s.errorFrame("invalid json: " + err.Error())
@@ -289,6 +327,7 @@ func (s *TCPServer) handlePublishTopicTCP(frame protocol.Frame) protocol.Frame {
 	msg := newMessage(req.Topic, req.Payload, req.Headers)
 	msg.Delay = req.Delay
 	msg.TTL = req.TTL
+	msg.Priority = req.Priority
 
 	if err := s.broker.PublishTopic(req.Topic, msg); err != nil {
 		if nle, ok := cluster.IsNotLeaderError(err); ok {
@@ -298,7 +337,14 @@ func (s *TCPServer) handlePublishTopicTCP(frame protocol.Frame) protocol.Frame {
 	}
 
 	s.metrics.IncPublished()
-	data, _ := json.Marshal(publishResponse{ID: msg.ID, Topic: msg.Topic})
+	resp := publishResponse{ID: msg.ID, Topic: msg.Topic}
+	if *confirmMode {
+		*nextSeqNo++
+		resp.SeqNo = *nextSeqNo
+		ack := true
+		resp.Ack = &ack
+	}
+	data, _ := json.Marshal(resp)
 	return s.okFrame(data)
 }
 
@@ -448,6 +494,141 @@ func (s *TCPServer) handleNackTCP(frame protocol.Frame, unackedCount *int) proto
 
 func (s *TCPServer) handleStatsTCP() protocol.Frame {
 	data, _ := json.Marshal(s.broker.Stats())
+	return s.okFrame(data)
+}
+
+// --- EXCHANGE DECLARE ---
+
+func (s *TCPServer) handleExchangeDeclareTCP(frame protocol.Frame) protocol.Frame {
+	var req struct {
+		Name    string `json:"name"`
+		Type    string `json:"type"`
+		Durable bool   `json:"durable"`
+	}
+	if err := json.Unmarshal(frame.Payload, &req); err != nil {
+		return s.errorFrame("invalid json: " + err.Error())
+	}
+	if req.Name == "" {
+		return s.errorFrame("name is required")
+	}
+	if req.Type == "" {
+		req.Type = "direct"
+	}
+
+	if err := s.broker.ExchangeDeclare(req.Name, broker.ExchangeType(req.Type), req.Durable); err != nil {
+		if nle, ok := cluster.IsNotLeaderError(err); ok {
+			return s.notLeaderFrame(nle)
+		}
+		return s.errorFrame(err.Error())
+	}
+	return s.okFrame([]byte(`{"status":"ok"}`))
+}
+
+// --- EXCHANGE DELETE ---
+
+func (s *TCPServer) handleExchangeDeleteTCP(frame protocol.Frame) protocol.Frame {
+	var req struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(frame.Payload, &req); err != nil {
+		return s.errorFrame("invalid json: " + err.Error())
+	}
+	if req.Name == "" {
+		return s.errorFrame("name is required")
+	}
+
+	if err := s.broker.ExchangeDelete(req.Name); err != nil {
+		if nle, ok := cluster.IsNotLeaderError(err); ok {
+			return s.notLeaderFrame(nle)
+		}
+		return s.errorFrame(err.Error())
+	}
+	return s.okFrame([]byte(`{"status":"ok"}`))
+}
+
+// --- BIND QUEUE ---
+
+func (s *TCPServer) handleBindQueueTCP(frame protocol.Frame) protocol.Frame {
+	var req struct {
+		Exchange   string            `json:"exchange"`
+		Queue      string            `json:"queue"`
+		BindingKey string            `json:"binding_key"`
+		Headers    map[string]string `json:"headers,omitempty"`
+		MatchAll   bool              `json:"match_all,omitempty"`
+	}
+	if err := json.Unmarshal(frame.Payload, &req); err != nil {
+		return s.errorFrame("invalid json: " + err.Error())
+	}
+	if req.Exchange == "" || req.Queue == "" {
+		return s.errorFrame("exchange and queue are required")
+	}
+
+	if err := s.broker.BindQueue(req.Exchange, req.Queue, req.BindingKey, req.Headers, req.MatchAll); err != nil {
+		if nle, ok := cluster.IsNotLeaderError(err); ok {
+			return s.notLeaderFrame(nle)
+		}
+		return s.errorFrame(err.Error())
+	}
+	return s.okFrame([]byte(`{"status":"ok"}`))
+}
+
+// --- UNBIND QUEUE ---
+
+func (s *TCPServer) handleUnbindQueueTCP(frame protocol.Frame) protocol.Frame {
+	var req struct {
+		Exchange   string `json:"exchange"`
+		Queue      string `json:"queue"`
+		BindingKey string `json:"binding_key"`
+	}
+	if err := json.Unmarshal(frame.Payload, &req); err != nil {
+		return s.errorFrame("invalid json: " + err.Error())
+	}
+	if req.Exchange == "" || req.Queue == "" {
+		return s.errorFrame("exchange and queue are required")
+	}
+
+	if err := s.broker.UnbindQueue(req.Exchange, req.Queue, req.BindingKey); err != nil {
+		if nle, ok := cluster.IsNotLeaderError(err); ok {
+			return s.notLeaderFrame(nle)
+		}
+		return s.errorFrame(err.Error())
+	}
+	return s.okFrame([]byte(`{"status":"ok"}`))
+}
+
+// --- PUBLISH EXCHANGE ---
+
+func (s *TCPServer) handlePublishExchangeTCP(frame protocol.Frame, confirmMode *bool, nextSeqNo *uint64) protocol.Frame {
+	var req struct {
+		Exchange   string            `json:"exchange"`
+		RoutingKey string            `json:"routing_key"`
+		Payload    json.RawMessage   `json:"payload"`
+		Headers    map[string]string `json:"headers,omitempty"`
+		Priority   int               `json:"priority"`
+	}
+	if err := json.Unmarshal(frame.Payload, &req); err != nil {
+		return s.errorFrame("invalid json: " + err.Error())
+	}
+
+	msg := newMessage("", req.Payload, req.Headers)
+	msg.Priority = req.Priority
+
+	if err := s.broker.PublishExchange(req.Exchange, req.RoutingKey, msg); err != nil {
+		if nle, ok := cluster.IsNotLeaderError(err); ok {
+			return s.notLeaderFrame(nle)
+		}
+		return s.errorFrame(err.Error())
+	}
+
+	s.metrics.IncPublished()
+	resp := publishResponse{ID: msg.ID, Topic: msg.Topic}
+	if *confirmMode {
+		*nextSeqNo++
+		resp.SeqNo = *nextSeqNo
+		ack := true
+		resp.Ack = &ack
+	}
+	data, _ := json.Marshal(resp)
 	return s.okFrame(data)
 }
 

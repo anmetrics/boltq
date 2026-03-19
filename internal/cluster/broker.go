@@ -48,6 +48,12 @@ func (cb *ClusterBroker) Publish(topic string, msg *protocol.Message) error {
 	return resp.Error
 }
 
+// PublishConfirm is identical to Publish in cluster mode since Raft Apply already
+// guarantees quorum commit before returning.
+func (cb *ClusterBroker) PublishConfirm(topic string, msg *protocol.Message) error {
+	return cb.Publish(topic, msg)
+}
+
 // PublishTopic replicates a pub/sub publish through Raft consensus.
 func (cb *ClusterBroker) PublishTopic(topicName string, msg *protocol.Message) error {
 	if !cb.node.IsLeader() {
@@ -238,6 +244,99 @@ func (cb *ClusterBroker) ProcessAdvancedFeatures() {
 	// In cluster mode, we want the promotion to be driven by Raft.
 	// For now, it's safe because PromoteDelayed is idempotent if message is already gone.
 	cb.localBroker.ProcessAdvancedFeatures()
+}
+
+// ExchangeDeclare replicates an exchange declaration through Raft.
+func (cb *ClusterBroker) ExchangeDeclare(name string, typ broker.ExchangeType, durable bool) error {
+	if !cb.node.IsLeader() {
+		return cb.notLeaderError()
+	}
+	cmd := &RaftCommand{
+		Type:         CmdRaftExchangeDeclare,
+		ExchangeName: name,
+		ExchangeType: string(typ),
+		Durable:      durable,
+	}
+	resp, err := cb.node.Apply(cmd, cb.applyTimeout)
+	if err != nil {
+		return err
+	}
+	return resp.Error
+}
+
+// ExchangeDelete replicates an exchange deletion through Raft.
+func (cb *ClusterBroker) ExchangeDelete(name string) error {
+	if !cb.node.IsLeader() {
+		return cb.notLeaderError()
+	}
+	cmd := &RaftCommand{
+		Type:         CmdRaftExchangeDelete,
+		ExchangeName: name,
+	}
+	resp, err := cb.node.Apply(cmd, cb.applyTimeout)
+	if err != nil {
+		return err
+	}
+	return resp.Error
+}
+
+// BindQueue replicates a queue binding through Raft.
+func (cb *ClusterBroker) BindQueue(exchange, queueName, bindingKey string, headers map[string]string, matchAll bool) error {
+	if !cb.node.IsLeader() {
+		return cb.notLeaderError()
+	}
+	cmd := &RaftCommand{
+		Type:         CmdRaftBindQueue,
+		ExchangeName: exchange,
+		QueueName:    queueName,
+		BindingKey:   bindingKey,
+		MatchHeaders: headers,
+		MatchAll:     matchAll,
+	}
+	resp, err := cb.node.Apply(cmd, cb.applyTimeout)
+	if err != nil {
+		return err
+	}
+	return resp.Error
+}
+
+// UnbindQueue replicates a queue unbinding through Raft.
+func (cb *ClusterBroker) UnbindQueue(exchange, queueName, bindingKey string) error {
+	if !cb.node.IsLeader() {
+		return cb.notLeaderError()
+	}
+	cmd := &RaftCommand{
+		Type:         CmdRaftUnbindQueue,
+		ExchangeName: exchange,
+		QueueName:    queueName,
+		BindingKey:   bindingKey,
+	}
+	resp, err := cb.node.Apply(cmd, cb.applyTimeout)
+	if err != nil {
+		return err
+	}
+	return resp.Error
+}
+
+// PublishExchange replicates an exchange publish through Raft.
+func (cb *ClusterBroker) PublishExchange(exchange, routingKey string, msg *protocol.Message) error {
+	if !cb.node.IsLeader() {
+		return cb.notLeaderError()
+	}
+	if err := cb.node.VerifyLeader(); err != nil {
+		return cb.notLeaderError()
+	}
+	cmd := &RaftCommand{
+		Type:         CmdRaftPublishExchange,
+		ExchangeName: exchange,
+		RoutingKey:   routingKey,
+		Message:      msg,
+	}
+	resp, err := cb.node.Apply(cmd, cb.applyTimeout)
+	if err != nil {
+		return err
+	}
+	return resp.Error
 }
 
 // Close shuts down the cluster broker.

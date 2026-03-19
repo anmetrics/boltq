@@ -25,5 +25,11 @@ type Storage interface {
 
 	// Size returns the current size of the storage in bytes.
 	Size() int64
+
+	// Sync forces a flush and fsync to ensure data is on disk.
+	Sync() error
+
+	// WriteMetadata persists a metadata record (e.g., exchange/binding definitions).
+	WriteMetadata(recordType byte, data []byte) (int, error)
 }
 

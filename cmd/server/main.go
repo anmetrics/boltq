@@ -15,6 +15,7 @@ import (
 
 	"github.com/boltq/boltq/internal/api"
 	"github.com/boltq/boltq/internal/broker"
+	"github.com/boltq/boltq/internal/cache"
 	"github.com/boltq/boltq/internal/cluster"
 	"github.com/boltq/boltq/internal/config"
 	"github.com/boltq/boltq/internal/metrics"
@@ -87,6 +88,19 @@ func main() {
 		cfg.Cluster.NonVoter = true
 	}
 
+	// Cache env overrides.
+	if v := os.Getenv("BOLTQ_CACHE_ENABLED"); v == "true" || v == "1" {
+		cfg.Cache.Enabled = true
+	} else if v == "false" || v == "0" {
+		cfg.Cache.Enabled = false
+	}
+	if v := os.Getenv("BOLTQ_CACHE_MAX_KEYS"); v != "" {
+		var maxKeys int
+		if _, err := fmt.Sscanf(v, "%d", &maxKeys); err == nil {
+			cfg.Cache.MaxKeys = maxKeys
+		}
+	}
+
 	// Auto-generate node ID from hostname if not set.
 	if cfg.Cluster.Enabled && cfg.Cluster.NodeID == "" {
 		hostname, _ := os.Hostname()
@@ -140,6 +154,9 @@ func main() {
 					order = append(order, rec.Message.ID)
 				case wal.RecordAck:
 					delete(msgs, rec.MsgID)
+				default:
+					// Metadata records (exchange/binding) - replay to restore state
+					b.ReplayMetadata(rec.Type, rec.Metadata)
 				}
 			}
 			
@@ -193,10 +210,40 @@ func main() {
 		log.Fatalf("[server] failed to start TCP server: %v", err)
 	}
 
+	// Initialize cache/KV store.
+	var kvStore *cache.Store
+	cacheQuit := make(chan struct{})
+	if cfg.Cache.Enabled {
+		kvStore = cache.NewStore(cfg.Cache.MaxKeys)
+		log.Printf("[server] cache enabled (max_keys=%d, default_ttl=%dms, cleanup=%ds)",
+			cfg.Cache.MaxKeys, cfg.Cache.DefaultTTL, cfg.Cache.CleanupSec)
+
+		// Start cache cleanup goroutine.
+		cleanupInterval := time.Duration(cfg.Cache.CleanupSec) * time.Second
+		if cleanupInterval <= 0 {
+			cleanupInterval = 10 * time.Second
+		}
+		go func() {
+			ticker := time.NewTicker(cleanupInterval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ticker.C:
+					kvStore.CleanExpired()
+				case <-cacheQuit:
+					return
+				}
+			}
+		}()
+	}
+
 	// Start HTTP server.
 	httpServer := api.NewHTTPServer(activeBroker, m, cfg.Server, cfg.Security.APIKey)
 	if raftNode != nil {
 		httpServer.SetClusterNode(raftNode)
+	}
+	if kvStore != nil {
+		httpServer.SetCache(kvStore, cfg.Cache.DefaultTTL)
 	}
 	httpAddr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.HTTPPort)
 	go func() {
@@ -229,9 +276,13 @@ func main() {
 		gracefulLeave(seeds, cfg.Cluster.NodeID)
 	}
 
+	close(cacheQuit)
 	tcpServer.Shutdown()
 	httpServer.Shutdown()
 	sched.Stop()
+	if kvStore != nil {
+		kvStore.Close()
+	}
 	if raftNode != nil {
 		raftNode.Shutdown()
 	}

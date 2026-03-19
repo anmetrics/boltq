@@ -65,6 +65,25 @@ export const useApi = () => {
     body: { node_id: nodeId },
   })
 
+  // Cache / KV Store
+  const getCacheStats = () => fetchApi<any>('/cache/stats')
+  const getCacheEntries = (pattern?: string, search?: string) => {
+    const params = new URLSearchParams()
+    if (pattern) params.set('pattern', pattern)
+    if (search) params.set('search', search)
+    return fetchApi<any>(`/cache/entries?${params.toString()}`)
+  }
+  const cacheGet = (key: string) => fetchApi<any>(`/cache/get?key=${encodeURIComponent(key)}`)
+  const cacheSet = (key: string, value: any, ttl?: number) => fetchApi<any>('/cache/set', {
+    method: 'POST',
+    body: { key, value, ttl: ttl || 0 },
+  })
+  const cacheDel = (key: string) => fetchApi<any>('/cache/del', {
+    method: 'POST',
+    body: { key },
+  })
+  const cacheFlush = () => fetchApi<any>('/cache/flush', { method: 'POST' })
+
   return {
     getOverview,
     getStats,
@@ -75,5 +94,11 @@ export const useApi = () => {
     purgeDeadLetters,
     clusterJoin,
     clusterLeave,
+    getCacheStats,
+    getCacheEntries,
+    cacheGet,
+    cacheSet,
+    cacheDel,
+    cacheFlush,
   }
 }

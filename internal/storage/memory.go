@@ -47,3 +47,23 @@ func (m *MemoryStorage) Ack(msgID string) (int, error) {
 func (m *MemoryStorage) Close() error {
 	return nil
 }
+
+func (m *MemoryStorage) Rewrite(msgs []*protocol.Message) error {
+	m.mu.Lock()
+	m.messages = make([]*protocol.Message, len(msgs))
+	copy(m.messages, msgs)
+	m.mu.Unlock()
+	return nil
+}
+
+func (m *MemoryStorage) Size() int64 {
+	return 0
+}
+
+func (m *MemoryStorage) Sync() error {
+	return nil
+}
+
+func (m *MemoryStorage) WriteMetadata(recordType byte, data []byte) (int, error) {
+	return 0, nil
+}

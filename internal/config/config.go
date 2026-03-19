@@ -12,9 +12,18 @@ type Config struct {
 	Server      ServerConfig      `json:"server"`
 	Storage     StorageConfig     `json:"storage"`
 	Queue       QueueConfig       `json:"queue"`
+	Cache       CacheConfig       `json:"cache"`
 	Performance PerformanceConfig `json:"performance"`
 	Security    SecurityConfig    `json:"security"`
 	Cluster     ClusterConfig     `json:"cluster"`
+}
+
+// CacheConfig holds KV store / cache layer configuration.
+type CacheConfig struct {
+	Enabled     bool  `json:"enabled"`
+	MaxKeys     int   `json:"max_keys"`      // 0 = unlimited
+	DefaultTTL  int64 `json:"default_ttl_ms"` // default TTL in ms, 0 = no expiry
+	CleanupSec  int   `json:"cleanup_sec"`    // expired key cleanup interval in seconds
 }
 
 // ClusterConfig holds Raft clustering configuration.
@@ -90,6 +99,12 @@ func Default() *Config {
 		},
 		Performance: PerformanceConfig{
 			WorkerPool: 16,
+		},
+		Cache: CacheConfig{
+			Enabled:    true,
+			MaxKeys:    0,         // unlimited
+			DefaultTTL: 0,         // no expiry
+			CleanupSec: 10,        // cleanup every 10 seconds
 		},
 		Cluster: ClusterConfig{
 			Enabled:           false,

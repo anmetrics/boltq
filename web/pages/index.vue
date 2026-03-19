@@ -93,7 +93,7 @@
           </div>
 
           <!-- Storage -->
-          <div class="modern-card pa-5 flex-grow-1">
+          <div class="modern-card pa-5">
             <h3 class="card-title mb-4">Storage</h3>
             <div class="storage-highlight">
               {{ formatBytes(overview?.storage?.size || 0) }}
@@ -111,6 +111,32 @@
               </span>
               <span class="text-caption text-medium-emphasis">
                 Threshold: {{ formatBytes(overview?.storage?.compaction_threshold || 0) }}
+              </span>
+            </div>
+          </div>
+
+          <!-- Cache -->
+          <div v-if="overview?.cache?.enabled" class="modern-card pa-5 flex-grow-1">
+            <div class="d-flex align-center justify-space-between mb-4">
+              <h3 class="card-title">Cache</h3>
+              <v-btn to="/cache" variant="text" color="primary" size="x-small" rounded="lg">View</v-btn>
+            </div>
+            <div class="d-flex justify-space-between mb-3">
+              <div>
+                <div class="metric-label">Keys</div>
+                <div class="text-body-1 font-weight-bold">{{ formatNumber(overview.cache.stats?.key_count || 0) }}</div>
+              </div>
+              <div class="text-right">
+                <div class="metric-label">Memory</div>
+                <div class="text-body-1 font-weight-bold">{{ formatBytes(overview.cache.stats?.memory_used || 0) }}</div>
+              </div>
+            </div>
+            <div class="d-flex justify-space-between">
+              <span class="text-caption text-medium-emphasis">
+                Hits: {{ formatNumber(overview.cache.stats?.hits || 0) }}
+              </span>
+              <span class="text-caption text-medium-emphasis">
+                Misses: {{ formatNumber(overview.cache.stats?.misses || 0) }}
               </span>
             </div>
           </div>

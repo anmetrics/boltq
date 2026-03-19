@@ -8,12 +8,14 @@ import (
 	"strings"
 	"time"
 
+	"runtime"
+
 	"github.com/boltq/boltq/internal/broker"
+	"github.com/boltq/boltq/internal/cache"
 	"github.com/boltq/boltq/internal/cluster"
 	"github.com/boltq/boltq/internal/config"
 	"github.com/boltq/boltq/internal/metrics"
 	"github.com/boltq/boltq/pkg/protocol"
-	"runtime"
 )
 
 // HTTPServer provides the admin REST API (stats, metrics, health, cluster management).
@@ -24,6 +26,8 @@ type HTTPServer struct {
 	apiKey      string
 	tlsConfig   config.TLSConfig
 	clusterNode *cluster.RaftNode // nil if clustering is disabled
+	cache       *cache.Store      // nil if cache is disabled
+	defaultTTL  int64             // default TTL for cache entries in ms
 	mux         *http.ServeMux
 	server      *http.Server
 }
@@ -57,10 +61,20 @@ func (s *HTTPServer) registerRoutes() {
 	s.mux.HandleFunc("/consume", s.cors(s.auth(s.handleConsume)))
 	s.mux.HandleFunc("/ack", s.cors(s.auth(s.handleAck)))
 
+	// Exchange management routes.
+	s.mux.HandleFunc("/exchange/declare", s.cors(s.auth(s.handleExchangeDeclare)))
+	s.mux.HandleFunc("/exchange/delete", s.cors(s.auth(s.handleExchangeDelete)))
+	s.mux.HandleFunc("/exchange/bind", s.cors(s.auth(s.handleExchangeBind)))
+	s.mux.HandleFunc("/exchange/unbind", s.cors(s.auth(s.handleExchangeUnbind)))
+	s.mux.HandleFunc("/exchange/publish", s.cors(s.auth(s.handleExchangePublish)))
+
 	// Cluster management routes.
 	s.mux.HandleFunc("/cluster/join", s.cors(s.auth(s.handleClusterJoin)))
 	s.mux.HandleFunc("/cluster/leave", s.cors(s.auth(s.handleClusterLeave)))
 	s.mux.HandleFunc("/cluster/status", s.cors(s.auth(s.handleClusterStatus)))
+
+	// Cache/KV store routes.
+	s.registerCacheRoutes()
 }
 
 // Start starts the HTTP server on the given address.
@@ -168,6 +182,17 @@ func (s *HTTPServer) handleOverview(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		overview["cluster"] = map[string]interface{}{
+			"enabled": false,
+		}
+	}
+
+	if s.cache != nil {
+		overview["cache"] = map[string]interface{}{
+			"enabled": true,
+			"stats":   s.cache.GetStats(),
+		}
+	} else {
+		overview["cache"] = map[string]interface{}{
 			"enabled": false,
 		}
 	}
@@ -290,10 +315,11 @@ func (s *HTTPServer) handlePublish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Topic   string          `json:"topic"`
-		Payload json.RawMessage `json:"payload"`
-		Delay   int64           `json:"delay"`
-		TTL     int64           `json:"ttl"`
+		Topic    string          `json:"topic"`
+		Payload  json.RawMessage `json:"payload"`
+		Delay    int64           `json:"delay"`
+		TTL      int64           `json:"ttl"`
+		Priority int             `json:"priority"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json")
@@ -307,6 +333,7 @@ func (s *HTTPServer) handlePublish(w http.ResponseWriter, r *http.Request) {
 	msg := protocol.NewMessage(req.Topic, req.Payload, nil)
 	msg.Delay = req.Delay
 	msg.TTL = req.TTL
+	msg.Priority = req.Priority
 
 	if err := s.broker.Publish(req.Topic, msg); err != nil {
 		if nle, ok := cluster.IsNotLeaderError(err); ok {
@@ -375,6 +402,171 @@ func (s *HTTPServer) handleAck(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "acked"})
+}
+
+// --- Exchange Declare ---
+
+func (s *HTTPServer) handleExchangeDeclare(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req struct {
+		Name    string `json:"name"`
+		Type    string `json:"type"`
+		Durable bool   `json:"durable"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	defer r.Body.Close()
+	if req.Name == "" {
+		writeError(w, http.StatusBadRequest, "name is required")
+		return
+	}
+	if req.Type == "" {
+		req.Type = "direct"
+	}
+	if err := s.broker.ExchangeDeclare(req.Name, broker.ExchangeType(req.Type), req.Durable); err != nil {
+		if nle, ok := cluster.IsNotLeaderError(err); ok {
+			writeJSON(w, http.StatusTemporaryRedirect, map[string]string{"error": "not leader", "leader": nle.Leader, "leader_id": nle.LeaderID})
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// --- Exchange Delete ---
+
+func (s *HTTPServer) handleExchangeDelete(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	defer r.Body.Close()
+	if req.Name == "" {
+		writeError(w, http.StatusBadRequest, "name is required")
+		return
+	}
+	if err := s.broker.ExchangeDelete(req.Name); err != nil {
+		if nle, ok := cluster.IsNotLeaderError(err); ok {
+			writeJSON(w, http.StatusTemporaryRedirect, map[string]string{"error": "not leader", "leader": nle.Leader, "leader_id": nle.LeaderID})
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// --- Exchange Bind ---
+
+func (s *HTTPServer) handleExchangeBind(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req struct {
+		Exchange   string            `json:"exchange"`
+		Queue      string            `json:"queue"`
+		BindingKey string            `json:"binding_key"`
+		Headers    map[string]string `json:"headers,omitempty"`
+		MatchAll   bool              `json:"match_all,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	defer r.Body.Close()
+	if req.Exchange == "" || req.Queue == "" {
+		writeError(w, http.StatusBadRequest, "exchange and queue are required")
+		return
+	}
+	if err := s.broker.BindQueue(req.Exchange, req.Queue, req.BindingKey, req.Headers, req.MatchAll); err != nil {
+		if nle, ok := cluster.IsNotLeaderError(err); ok {
+			writeJSON(w, http.StatusTemporaryRedirect, map[string]string{"error": "not leader", "leader": nle.Leader, "leader_id": nle.LeaderID})
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// --- Exchange Unbind ---
+
+func (s *HTTPServer) handleExchangeUnbind(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req struct {
+		Exchange   string `json:"exchange"`
+		Queue      string `json:"queue"`
+		BindingKey string `json:"binding_key"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	defer r.Body.Close()
+	if req.Exchange == "" || req.Queue == "" {
+		writeError(w, http.StatusBadRequest, "exchange and queue are required")
+		return
+	}
+	if err := s.broker.UnbindQueue(req.Exchange, req.Queue, req.BindingKey); err != nil {
+		if nle, ok := cluster.IsNotLeaderError(err); ok {
+			writeJSON(w, http.StatusTemporaryRedirect, map[string]string{"error": "not leader", "leader": nle.Leader, "leader_id": nle.LeaderID})
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// --- Exchange Publish ---
+
+func (s *HTTPServer) handleExchangePublish(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req struct {
+		Exchange   string            `json:"exchange"`
+		RoutingKey string            `json:"routing_key"`
+		Payload    json.RawMessage   `json:"payload"`
+		Headers    map[string]string `json:"headers,omitempty"`
+		Priority   int               `json:"priority"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	defer r.Body.Close()
+
+	msg := protocol.NewMessage("", req.Payload, req.Headers)
+	msg.Priority = req.Priority
+
+	if err := s.broker.PublishExchange(req.Exchange, req.RoutingKey, msg); err != nil {
+		if nle, ok := cluster.IsNotLeaderError(err); ok {
+			writeJSON(w, http.StatusTemporaryRedirect, map[string]string{"error": "not leader", "leader": nle.Leader, "leader_id": nle.LeaderID})
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "published", "id": msg.ID})
 }
 
 // --- Cluster Join ---

@@ -18,8 +18,13 @@ const (
 	CmdRaftPromote      CommandType = 6
 	CmdRaftPurge        CommandType = 7
 	CmdRaftPurgeDL      CommandType = 8
-	CmdRaftSubscribe    CommandType = 9
-	CmdRaftUnsubscribe  CommandType = 10
+	CmdRaftSubscribe       CommandType = 9
+	CmdRaftUnsubscribe     CommandType = 10
+	CmdRaftExchangeDeclare CommandType = 11
+	CmdRaftExchangeDelete  CommandType = 12
+	CmdRaftBindQueue       CommandType = 13
+	CmdRaftUnbindQueue     CommandType = 14
+	CmdRaftPublishExchange CommandType = 15
 )
 
 // RaftCommand is the payload serialized into each Raft log entry.
@@ -29,6 +34,15 @@ type RaftCommand struct {
 	Message      *protocol.Message `json:"message,omitempty"`
 	MessageID    string            `json:"message_id,omitempty"`
 	SubscriberID string            `json:"subscriber_id,omitempty"`
+	// Exchange fields
+	ExchangeName string            `json:"exchange_name,omitempty"`
+	ExchangeType string            `json:"exchange_type,omitempty"`
+	Durable      bool              `json:"durable,omitempty"`
+	BindingKey   string            `json:"binding_key,omitempty"`
+	RoutingKey   string            `json:"routing_key,omitempty"`
+	QueueName    string            `json:"queue_name,omitempty"`
+	MatchHeaders map[string]string `json:"match_headers,omitempty"`
+	MatchAll     bool              `json:"match_all,omitempty"`
 }
 
 // Encode serializes the command to JSON bytes.
