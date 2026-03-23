@@ -16,8 +16,8 @@ BoltQ is a high-performance, memory-first message queue server written in Go wit
 │  └──────────┘    │  ┌──────┐ │    └──────────────────────┘  │
 │                  │  │ Work │ │                               │
 │  ┌──────────┐    │  │Queue │ │    ┌──────────────────────┐  │
-│  │  gRPC    │───▶│  ├──────┤ │───▶│   Storage Engine     │  │
-│  │  (TBD)   │    │  │Pub/  │ │    │   ┌──────┐ ┌──────┐ │  │
+│  │WebSocket │───▶│  ├──────┤ │───▶│   Storage Engine     │  │
+│  │  (/ws)   │    │  │Pub/  │ │    │   ┌──────┐ ┌──────┐ │  │
 │  └──────────┘    │  │Sub   │ │    │   │Memory│ │ Disk │ │  │
 │                  │  ├──────┤ │    │   │      │ │ (WAL)│ │  │
 │  ┌──────────┐    │  │Dead  │ │    │   └──────┘ └──────┘ │  │
@@ -210,6 +210,35 @@ BoltQ uses Go's concurrency primitives:
 5. **Buffered WAL writes**: 64KB write buffer amortizes syscall overhead. Trade-off: up to 64KB of recent data may be lost on crash without explicit `Sync()`.
 
 6. **Standard library only**: Zero external dependencies reduces supply chain risk and simplifies deployment. No framework overhead for HTTP serving.
+
+## WebSocket Adapter
+
+BoltQ provides a built-in WebSocket endpoint at `/ws` on the HTTP port, implemented using pure Go standard library (RFC 6455) with zero external dependencies.
+
+```
+Browser/Client                    BoltQ Server
+     │                                │
+     │── WS Upgrade (HTTP 101) ──────▶│
+     │◀──── Switching Protocols ──────│
+     │                                │
+     │── {"cmd":"publish",...} ──────▶│ ── Broker.Publish()
+     │◀── {"status":"ok",...} ────────│
+     │                                │
+     │── {"cmd":"subscribe",...} ────▶│ ── Broker.Subscribe()
+     │◀── {"status":"ok",...} ────────│
+     │◀── {"event":"message",...} ────│ ◀── Push (real-time)
+     │◀── {"event":"message",...} ────│ ◀── Push (real-time)
+     │                                │
+     │── Close frame ───────────────▶│ ── Cleanup subscriptions
+```
+
+**Key design decisions:**
+- Same JSON protocol as HTTP REST, but over persistent connection
+- Full-duplex: subscriptions push messages in real-time without polling
+- Automatic cleanup of subscriptions on disconnect
+- All broker features available: publish, consume, ack, nack, subscribe, exchange routing, priority, publisher confirm
+- Per-connection state: auth, prefetch, confirm mode, unacked count
+- Max frame size: 4MB (matching TCP protocol)
 
 ## Exchange Routing
 

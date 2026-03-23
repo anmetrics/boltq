@@ -452,6 +452,105 @@ Content-Type: application/json
 
 ---
 
+## WebSocket
+
+BoltQ exposes a WebSocket endpoint at `GET /ws` for real-time, bidirectional messaging from browsers and other WebSocket clients. Zero external dependencies — implemented with pure Go standard library (RFC 6455).
+
+### Connection
+
+```
+ws://localhost:9090/ws
+```
+
+### Protocol
+
+Clients send JSON commands and receive JSON responses over WebSocket text frames.
+
+**Request format:**
+```json
+{"cmd": "<command>", ...params}
+```
+
+**Response format:**
+```json
+{"status": "ok|error|empty", "data": {...}, "error": "..."}
+```
+
+### Commands
+
+| Command | Description | Key Fields |
+|---------|-------------|------------|
+| `auth` | Authenticate | `api_key` |
+| `ping` | Health check | — |
+| `prefetch` | Set prefetch limit | `count` |
+| `confirm` | Enable publisher confirm | — |
+| `publish` | Publish to work queue | `topic`, `payload`, `headers`, `delay`, `ttl`, `priority` |
+| `publish_topic` | Publish to pub/sub topic | `topic`, `payload`, `headers`, `delay`, `ttl`, `priority` |
+| `consume` | Consume from queue | `topic` |
+| `subscribe` | Subscribe to pub/sub | `topic`, `id`, `durable` |
+| `ack` | Acknowledge message | `id` |
+| `nack` | Negative acknowledge | `id` |
+| `stats` | Get broker statistics | — |
+| `exchange_declare` | Declare exchange | `exchange`, `type`, `durable` |
+| `exchange_delete` | Delete exchange | `exchange` |
+| `bind_queue` | Bind queue to exchange | `exchange`, `queue`, `binding_key`, `headers`, `match_all` |
+| `unbind_queue` | Unbind queue | `exchange`, `queue`, `binding_key` |
+| `publish_exchange` | Publish via exchange | `exchange`, `routing_key`, `payload`, `headers`, `priority` |
+
+### Subscription Events
+
+When subscribed, the server pushes messages as:
+
+```json
+{
+  "event": "message",
+  "id": "msg-id",
+  "topic": "events",
+  "payload": {...},
+  "headers": {},
+  "timestamp": 1234567890,
+  "subscriber_id": "sub-1",
+  "priority": 0
+}
+```
+
+### Example (JavaScript browser)
+
+```js
+const ws = new WebSocket('ws://localhost:9090/ws');
+
+ws.onopen = () => {
+  // Authenticate (if api_key configured)
+  ws.send(JSON.stringify({ cmd: 'auth', api_key: 'secret' }));
+
+  // Publish
+  ws.send(JSON.stringify({
+    cmd: 'publish',
+    topic: 'orders',
+    payload: { item: 'widget', qty: 3 },
+    priority: 5
+  }));
+
+  // Subscribe to real-time events
+  ws.send(JSON.stringify({
+    cmd: 'subscribe',
+    topic: 'notifications',
+    id: 'browser-1'
+  }));
+};
+
+ws.onmessage = (event) => {
+  const msg = JSON.parse(event.data);
+  if (msg.event === 'message') {
+    console.log('Received:', msg.payload);
+  } else {
+    console.log('Response:', msg);
+  }
+};
+```
+
+---
+
 ## Cache / KV Store
 
 BoltQ includes a built-in in-memory KV store with TTL support. Enable it via config (`cache.enabled: true`).

@@ -366,6 +366,66 @@ for (let i = 0; i < WORKER_COUNT; i++) {
 
 ---
 
+## WebSocket
+
+BoltQ supports WebSocket connections at `ws://host:http_port/ws`. This is ideal for browser clients and real-time web applications.
+
+```js
+// Browser / Node.js WebSocket
+const ws = new WebSocket('ws://localhost:9090/ws');
+
+ws.onopen = () => {
+  // Authenticate
+  ws.send(JSON.stringify({ cmd: 'auth', api_key: 'your-key' }));
+
+  // Publish with priority
+  ws.send(JSON.stringify({
+    cmd: 'publish',
+    topic: 'tasks',
+    payload: { action: 'send_email', to: 'user@example.com' },
+    priority: 7
+  }));
+
+  // Subscribe to real-time events
+  ws.send(JSON.stringify({
+    cmd: 'subscribe',
+    topic: 'notifications',
+    id: 'browser-1',
+    durable: true
+  }));
+};
+
+ws.onmessage = (event) => {
+  const msg = JSON.parse(event.data);
+
+  if (msg.event === 'message') {
+    // Subscription push
+    console.log('Event:', msg.topic, msg.payload);
+  } else {
+    // Command response
+    console.log('Response:', msg.status, msg.data);
+  }
+};
+
+// Consume + Ack pattern
+ws.send(JSON.stringify({ cmd: 'consume', topic: 'tasks' }));
+// On response: ws.send(JSON.stringify({ cmd: 'ack', id: msg.data.id }));
+
+// Exchange routing
+ws.send(JSON.stringify({ cmd: 'exchange_declare', exchange: 'logs', type: 'topic' }));
+ws.send(JSON.stringify({ cmd: 'bind_queue', exchange: 'logs', queue: 'errors', binding_key: '*.error' }));
+ws.send(JSON.stringify({
+  cmd: 'publish_exchange',
+  exchange: 'logs',
+  routing_key: 'app.error',
+  payload: { message: 'disk full' }
+}));
+```
+
+See the [API Reference](api-reference.md#websocket) for the full command list.
+
+---
+
 ## Cache / KV Store
 
 The Node.js SDK provides cache methods via the HTTP admin API. Requires the server cache to be enabled.

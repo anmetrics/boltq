@@ -377,6 +377,42 @@ func main() {
 
 ---
 
+## WebSocket
+
+BoltQ also supports WebSocket connections at `ws://host:http_port/ws`. This is useful for browser clients or environments where TCP binary protocol is not available.
+
+The WebSocket protocol uses JSON text frames — no binary encoding needed. See the [API Reference](api-reference.md#websocket) for the full command list.
+
+```go
+// Example using gorilla/websocket or nhooyr.io/websocket:
+import "nhooyr.io/websocket"
+
+ctx := context.Background()
+conn, _, err := websocket.Dial(ctx, "ws://localhost:9090/ws", nil)
+
+// Publish
+conn.Write(ctx, websocket.MessageText, []byte(`{
+  "cmd": "publish",
+  "topic": "orders",
+  "payload": {"item": "widget"},
+  "priority": 5
+}`))
+
+// Read response
+_, data, _ := conn.Read(ctx)
+fmt.Println(string(data))  // {"status":"ok","data":{"id":"...","topic":"orders"}}
+
+// Subscribe for real-time events
+conn.Write(ctx, websocket.MessageText, []byte(`{
+  "cmd": "subscribe",
+  "topic": "events",
+  "id": "go-sub-1"
+}`))
+// Messages will be pushed as {"event":"message", ...}
+```
+
+---
+
 ## Cache / KV Store
 
 The Go SDK provides cache methods that communicate with the server over HTTP.

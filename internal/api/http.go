@@ -73,6 +73,9 @@ func (s *HTTPServer) registerRoutes() {
 	s.mux.HandleFunc("/cluster/leave", s.cors(s.auth(s.handleClusterLeave)))
 	s.mux.HandleFunc("/cluster/status", s.cors(s.auth(s.handleClusterStatus)))
 
+	// WebSocket endpoint.
+	s.mux.HandleFunc("/ws", s.handleWebSocket)
+
 	// Cache/KV store routes.
 	s.registerCacheRoutes()
 }
