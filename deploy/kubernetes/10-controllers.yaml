@@ -1,0 +1,173 @@
+# BoltQ control plane — the Raft voters.
+#
+# These pods decide, they do not serve. They hold the replicated metadata that
+# says which node leads which partition, and the queue-plane Raft log. Client
+# traffic never reaches them.
+#
+# Keep this at 3 (or 5). Every voter added is another machine that must
+# acknowledge each metadata commit, so a large voter set makes the control plane
+# slower and no more available — 3 voters and 5 voters both survive exactly one
+# and two failures respectively, and nothing beyond 5 is worth the latency.
+# Scale the data tier instead; it joins as non-voters.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: boltq-controllers
+  namespace: boltq
+  labels: { app: boltq, tier: control }
+spec:
+  clusterIP: None
+  # Peers must resolve each other before any of them is ready — that is how they
+  # become ready. Without this the cluster cannot bootstrap.
+  publishNotReadyAddresses: true
+  ports:
+    - { name: http, port: 9090 }
+    - { name: raft, port: 9100 }
+    - { name: meta-raft, port: 9101 }
+  selector: { app: boltq, tier: control }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: boltq-controllers
+  namespace: boltq
+spec:
+  # A voluntary disruption — node drain, cluster upgrade — may take one voter at
+  # a time. Without this, draining a node pool evicts all three at once and the
+  # cluster loses quorum with no failure having occurred.
+  maxUnavailable: 1
+  selector:
+    matchLabels: { app: boltq, tier: control }
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: boltq-controllers
+  namespace: boltq
+spec:
+  serviceName: boltq-controllers
+  replicas: 3
+  podManagementPolicy: Parallel # Peers need each other up to form a quorum.
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels: { app: boltq, tier: control }
+  template:
+    metadata:
+      labels: { app: boltq, tier: control }
+    spec:
+      serviceAccountName: boltq
+      # A snapshot in progress should finish before the process dies.
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532 # So the mounted volume is writable by the non-root user.
+        seccompProfile: { type: RuntimeDefault }
+      affinity:
+        podAntiAffinity:
+          # Required, not preferred. Two voters on one node means one machine
+          # failure costs two of three votes — the cluster is then less
+          # available than a single node would have been.
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels: { app: boltq, tier: control }
+              topologyKey: kubernetes.io/hostname
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels: { app: boltq, tier: control }
+      containers:
+        - name: boltq
+          # Pin a digest or an immutable tag. `latest` with IfNotPresent means a
+          # rollout can silently do nothing, and two pods can run two builds.
+          image: boltq:0.1.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - { containerPort: 9090, name: http }
+            - { containerPort: 9100, name: raft }
+            - { containerPort: 9101, name: meta-raft }
+          envFrom:
+            - configMapRef: { name: boltq-config }
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef: { fieldPath: metadata.name }
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef: { fieldPath: metadata.namespace }
+            - name: BOLTQ_CLUSTER_ENABLED
+              value: "true"
+            - name: BOLTQ_NODE_ID
+              value: "$(POD_NAME)"
+            # Stable DNS, not the pod IP. A restarted pod gets a new IP, and
+            # nothing in the cluster would update the address its peers hold —
+            # the StatefulSet's DNS name is the only identifier that survives.
+            - name: BOLTQ_RAFT_ADDR
+              value: "$(POD_NAME).boltq-controllers.$(POD_NAMESPACE).svc.cluster.local:9100"
+            # Controllers carry both consensus groups: the control plane that
+            # every node follows, and the queue plane that only they replicate.
+            - name: BOLTQ_META_RAFT_ADDR
+              value: "$(POD_NAME).boltq-controllers.$(POD_NAMESPACE).svc.cluster.local:9101"
+            - name: BOLTQ_QUEUE_PLANE
+              value: "true"
+            - name: BOLTQ_SEEDS
+              value: >-
+                boltq-controllers-0.boltq-controllers.$(POD_NAMESPACE).svc.cluster.local:9090,boltq-controllers-1.boltq-controllers.$(POD_NAMESPACE).svc.cluster.local:9090,boltq-controllers-2.boltq-controllers.$(POD_NAMESPACE).svc.cluster.local:9090
+            - name: BOLTQ_API_KEY
+              valueFrom:
+                secretKeyRef: { name: boltq-secrets, key: api-key }
+            # Exactly one node forms the cluster; the rest join it. The server
+            # compares this against its own ID, so every pod runs an identical
+            # environment and no shell is needed in the image. It only takes
+            # effect on genuinely empty Raft state, so restarting pod-0 does not
+            # re-bootstrap over an existing cluster.
+            - name: BOLTQ_BOOTSTRAP_NODE_ID
+              value: "boltq-controllers-0"
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/boltq }
+            - { name: tmp, mountPath: /tmp }
+          # Startup probe absorbs the join: until it passes, the liveness probe
+          # is not armed, so a slow bootstrap cannot be mistaken for a hang.
+          startupProbe:
+            httpGet: { path: /livez, port: 9090 }
+            periodSeconds: 3
+            failureThreshold: 40 # up to 2 minutes to come up
+          livenessProbe:
+            # /livez never consults cluster state. A node that has lost quorum is
+            # not wedged — restarting it would remove the very voter the cluster
+            # needs to elect a leader. See internal/api/http_health.go.
+            httpGet: { path: /livez, port: 9090 }
+            periodSeconds: 10
+            failureThreshold: 6
+          readinessProbe:
+            # /readyz fails while no leader is known, which pulls the pod from
+            # service endpoints without killing it.
+            httpGet: { path: /readyz, port: 9090 }
+            periodSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests: { cpu: 500m, memory: 1Gi }
+            limits: { memory: 2Gi } # No CPU limit: throttling a Raft node
+            # during an election causes the failover it was meant to prevent.
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+      volumes:
+        - name: tmp
+          emptyDir: {}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        # Raft commits are fsync-bound. Network storage with high commit latency
+        # will cap the whole control plane; use a local or SSD-backed class.
+        # storageClassName: fast-ssd
+        resources:
+          requests: { storage: 20Gi }

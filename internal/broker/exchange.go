@@ -41,6 +41,43 @@ type ExchangeState struct {
 	Bindings []*Binding   `json:"bindings,omitempty"`
 }
 
+// Route returns the queue names matching a routing key and headers.
+//
+// Exported so the log-backed queue plane (internal/queuelog) can reuse these
+// matching rules rather than reimplementing them. Topic wildcards and headers
+// matching are subtle enough that a second implementation would be a second
+// place for them to drift.
+func (e *Exchange) Route(routingKey string, headers map[string]string) []string {
+	return e.route(routingKey, headers)
+}
+
+// Bind adds a binding, replacing any existing one with the same queue and
+// binding key so a repeated declaration is idempotent rather than duplicating
+// the match.
+func (e *Exchange) Bind(b *Binding) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for i, existing := range e.Bindings {
+		if existing.Queue == b.Queue && existing.BindingKey == b.BindingKey {
+			e.Bindings[i] = b
+			return
+		}
+	}
+	e.Bindings = append(e.Bindings, b)
+}
+
+// Unbind removes the binding for a queue and binding key.
+func (e *Exchange) Unbind(queue, bindingKey string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for i, b := range e.Bindings {
+		if b.Queue == queue && b.BindingKey == bindingKey {
+			e.Bindings = append(e.Bindings[:i], e.Bindings[i+1:]...)
+			return
+		}
+	}
+}
+
 // route returns the list of queue names that match the given routing key and headers.
 func (e *Exchange) route(routingKey string, headers map[string]string) []string {
 	e.mu.RLock()

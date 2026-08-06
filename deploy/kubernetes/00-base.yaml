@@ -1,0 +1,61 @@
+# BoltQ — namespace, identity and secrets.
+#
+# Apply this first: everything else references the ServiceAccount and Secret
+# defined here.
+#
+# The two Secrets are deliberately separate. The API key guards the admin and
+# cluster-management API; the replication secret guards a listener that can read
+# every record in the log. Sharing one value between them would mean handing
+# anyone with admin access the ability to stream the entire message history.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: boltq
+  labels:
+    name: boltq
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: boltq
+  namespace: boltq
+automountServiceAccountToken: false # BoltQ never calls the Kubernetes API.
+---
+# Replace both values before applying. `kubectl create secret generic boltq-secrets
+# --from-literal=api-key=$(openssl rand -hex 32) ...` is the intended path; this
+# manifest exists so the required keys are documented and a missing one fails at
+# deploy time rather than at runtime.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: boltq-secrets
+  namespace: boltq
+type: Opaque
+stringData:
+  # Guards /cluster/join, /cluster/leave and every admin endpoint. An empty
+  # value disables authentication entirely — see internal/api/http.go — so this
+  # must never be blank in a cluster reachable by anything but its own pods.
+  api-key: "CHANGE_ME_openssl_rand_hex_32"
+  # Authenticates replication sessions between data nodes.
+  replication-secret: "CHANGE_ME_openssl_rand_hex_32"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: boltq-config
+  namespace: boltq
+data:
+  # Ports, named once so the manifests and any sidecar agree.
+  #
+  #   9090  admin HTTP   — cluster-internal only, never in a LoadBalancer
+  #   9091  queue TCP    — cluster-internal or private ingress
+  #   9100  raft         — control plane consensus, cluster-internal only
+  #   9200  replication  — reads the whole log; cluster-internal only
+  #   9300  gateway WS   — the only port end users ever reach
+  BOLTQ_HTTP_PORT: "9090"
+  BOLTQ_TCP_PORT: "9091"
+  BOLTQ_STORAGE_MODE: "disk"
+  BOLTQ_DATA_DIR: "/var/lib/boltq/data"
+  BOLTQ_RAFT_DIR: "/var/lib/boltq/raft"
+  BOLTQ_STREAM_DIR: "/var/lib/boltq/streams"

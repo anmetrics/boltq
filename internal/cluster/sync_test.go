@@ -2,6 +2,7 @@ package cluster
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"testing"
 	"time"
@@ -150,11 +151,17 @@ func TestIdempotency(t *testing.T) {
 	defer os.RemoveAll(dir2)
 
 	b1 := broker.New(broker.Config{})
-	node1, _ := NewRaftNode(config.ClusterConfig{NodeID: "node1", RaftAddr: "127.0.0.1:9131", RaftDir: dir1, Bootstrap: true}, b1)
+	node1, errnode1 := NewRaftNode(config.ClusterConfig{NodeID: "node1", RaftAddr: "127.0.0.1:9131", RaftDir: dir1, Bootstrap: true}, b1)
+	if errnode1 != nil {
+		t.Fatalf("start node1: %v", errnode1)
+	}
 	defer node1.Shutdown()
 
 	b2 := broker.New(broker.Config{})
-	node2, _ := NewRaftNode(config.ClusterConfig{NodeID: "node2", RaftAddr: "127.0.0.1:9132", RaftDir: dir2}, b2)
+	node2, errnode2 := NewRaftNode(config.ClusterConfig{NodeID: "node2", RaftAddr: "127.0.0.1:9132", RaftDir: dir2}, b2)
+	if errnode2 != nil {
+		t.Fatalf("start node2: %v", errnode2)
+	}
 	defer node2.Shutdown()
 
 	cb1 := NewClusterBroker(node1, b1)
@@ -203,6 +210,11 @@ func TestIdempotency(t *testing.T) {
 
 func TestQuorumLossAndRecovery(t *testing.T) {
 	fmt.Println("--- Starting TestQuorumLossAndRecovery ---")
+	// Ports are taken from the OS rather than hardcoded. Fixed ports collide
+	// with sockets a previous test left in TIME_WAIT, and because the node
+	// construction below used to discard its error, the collision surfaced as a
+	// nil-pointer panic in an unrelated line.
+	p1, p2, p3 := freePort(t), freePort(t), freePort(t)
 	dir1, _ := os.MkdirTemp("", "boltq-q-1")
 	dir2, _ := os.MkdirTemp("", "boltq-q-2")
 	dir3, _ := os.MkdirTemp("", "boltq-q-3")
@@ -213,19 +225,28 @@ func TestQuorumLossAndRecovery(t *testing.T) {
 	// Start 3 nodes
 	s1 := storage.Storage(storage.MustNewDiskStorage(dir1 + "/data"))
 	b1 := broker.New(broker.Config{Storage: s1})
-	n1, _ := NewRaftNode(config.ClusterConfig{NodeID: "node1", RaftAddr: "127.0.0.1:9141", RaftDir: dir1, Bootstrap: true}, b1)
+	n1, errn1 := NewRaftNode(config.ClusterConfig{NodeID: "node1", RaftAddr: p1, RaftDir: dir1, Bootstrap: true}, b1)
+	if errn1 != nil {
+		t.Fatalf("start n1: %v", errn1)
+	}
 
 	s2 := storage.Storage(storage.MustNewDiskStorage(dir2 + "/data"))
 	b2 := broker.New(broker.Config{Storage: s2})
-	n2, _ := NewRaftNode(config.ClusterConfig{NodeID: "node2", RaftAddr: "127.0.0.1:9142", RaftDir: dir2}, b2)
+	n2, errn2 := NewRaftNode(config.ClusterConfig{NodeID: "node2", RaftAddr: p2, RaftDir: dir2}, b2)
+	if errn2 != nil {
+		t.Fatalf("start n2: %v", errn2)
+	}
 
 	s3 := storage.Storage(storage.MustNewDiskStorage(dir3 + "/data"))
 	b3 := broker.New(broker.Config{Storage: s3})
-	n3, _ := NewRaftNode(config.ClusterConfig{NodeID: "node3", RaftAddr: "127.0.0.1:9143", RaftDir: dir3}, b3)
+	n3, errn3 := NewRaftNode(config.ClusterConfig{NodeID: "node3", RaftAddr: p3, RaftDir: dir3}, b3)
+	if errn3 != nil {
+		t.Fatalf("start n3: %v", errn3)
+	}
 
 	time.Sleep(2 * time.Second) // wait for leader
-	n1.Join("node2", "127.0.0.1:9142")
-	n1.Join("node3", "127.0.0.1:9143")
+	n1.Join("node2", p2)
+	n1.Join("node3", p3)
 	time.Sleep(1 * time.Second)
 
 	cb1 := NewClusterBroker(n1, b1)
@@ -256,7 +277,10 @@ func TestQuorumLossAndRecovery(t *testing.T) {
 	b2_new := broker.New(broker.Config{Storage: s2_new})
 	// Fix: need to handle recovery of b2_new here if we want full state,
 	// but Raft will sync it anyway once it joins.
-	n2_new, _ := NewRaftNode(config.ClusterConfig{NodeID: "node2", RaftAddr: "127.0.0.1:9142", RaftDir: dir2}, b2_new)
+	n2_new, errn2_new := NewRaftNode(config.ClusterConfig{NodeID: "node2", RaftAddr: p2, RaftDir: dir2}, b2_new)
+	if errn2_new != nil {
+		t.Fatalf("start n2_new: %v", errn2_new)
+	}
 	defer n2_new.Shutdown()
 
 	fmt.Println("Waiting for quorum recovery...")
@@ -264,7 +288,17 @@ func TestQuorumLossAndRecovery(t *testing.T) {
 
 	// 5. Verify sync
 	fmt.Println("Testing write after recovery...")
-	err = cb1.Publish("q1", &protocol.Message{ID: "m3", Payload: []byte("v3")})
+	// Write through whichever node leads now, not through the node that led
+	// before.
+	//
+	// A leader that loses quorum steps down, and the election that follows may
+	// be won by any member — node1 has no special claim on leadership just
+	// because it held it earlier. Asserting otherwise made this test fail under
+	// -race, where everything is slow enough for the handover to actually
+	// happen. Real clients follow the leader for the same reason, which is why
+	// NotLeaderError carries its address.
+	err = writeToLeader(t, []*RaftNode{n1, n2_new}, []*broker.Broker{b1, b2_new},
+		&protocol.Message{ID: "m3", Payload: []byte("v3")})
 	if err != nil {
 		t.Fatalf("write failed after recovery: %v", err)
 	}
@@ -287,7 +321,10 @@ func TestDurableSubscriptionPersistence(t *testing.T) {
 	// 1. Start cluster and create durable subscription
 	s1 := storage.Storage(storage.MustNewDiskStorage(dir1 + "/data"))
 	b1 := broker.New(broker.Config{Storage: s1})
-	n1, _ := NewRaftNode(config.ClusterConfig{NodeID: "node1", RaftAddr: "127.0.0.1:9151", RaftDir: dir1, Bootstrap: true}, b1)
+	n1, errn1 := NewRaftNode(config.ClusterConfig{NodeID: "node1", RaftAddr: "127.0.0.1:9151", RaftDir: dir1, Bootstrap: true}, b1)
+	if errn1 != nil {
+		t.Fatalf("start n1: %v", errn1)
+	}
 	defer n1.Shutdown()
 
 	time.Sleep(2 * time.Second)
@@ -312,11 +349,14 @@ func TestDurableSubscriptionPersistence(t *testing.T) {
 
 	s1_new := storage.Storage(storage.MustNewDiskStorage(dir1 + "/data"))
 	b1_new := broker.New(broker.Config{Storage: s1_new})
-	n1_new, _ := NewRaftNode(config.ClusterConfig{NodeID: "node1", RaftAddr: "127.0.0.1:9151", RaftDir: dir1, Bootstrap: true}, b1_new)
+	n1_new, errn1_new := NewRaftNode(config.ClusterConfig{NodeID: "node1", RaftAddr: "127.0.0.1:9151", RaftDir: dir1, Bootstrap: true}, b1_new)
+	if errn1_new != nil {
+		t.Fatalf("start n1_new: %v", errn1_new)
+	}
 	defer n1_new.Shutdown()
-	
+
 	time.Sleep(2 * time.Second)
-	
+
 	// Manual recovery of durable subs state from snapshots is normally handled by Raft FSM,
 	// but here we verify the broker's local state is restored.
 	stats := b1_new.Stats()
@@ -327,4 +367,47 @@ func TestDurableSubscriptionPersistence(t *testing.T) {
 	}
 
 	fmt.Println("Durable subscription persistence verified (manual check of Raft state recommended)")
+}
+
+// freePort asks the OS for an unused port and returns it as host:port.
+//
+// The listener is closed before the address is handed back, so there is a
+// window where something else could take it. That window is far smaller than
+// the certainty of collision from hardcoding a port that a previous test in the
+// same package just used.
+func freePort(t *testing.T) string {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve port: %v", err)
+	}
+	addr := l.Addr().String()
+	l.Close()
+	return addr
+}
+
+// writeToLeader publishes through whichever node currently leads, retrying
+// briefly while an election settles.
+func writeToLeader(t *testing.T, nodes []*RaftNode, brokers []*broker.Broker, msg *protocol.Message) error {
+	t.Helper()
+	deadline := time.Now().Add(15 * time.Second)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		for i, n := range nodes {
+			if !n.IsLeader() {
+				continue
+			}
+			cb := NewClusterBroker(n, brokers[i])
+			if err := cb.Publish("q1", msg); err != nil {
+				lastErr = err
+				continue
+			}
+			return nil
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("no node became leader within the deadline")
+	}
+	return lastErr
 }

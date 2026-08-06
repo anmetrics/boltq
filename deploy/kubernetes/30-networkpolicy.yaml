@@ -1,0 +1,75 @@
+# Network isolation.
+#
+# The rule that matters: the replication listener on 9200 streams raw records to
+# anyone who completes a handshake. Its secret is the only thing standing between
+# an attacker and the entire message history, and a secret is a weaker boundary
+# than a network that cannot carry the connection at all. Same for Raft on 9100.
+#
+# These policies require a CNI that enforces them (Calico, Cilium, GKE Dataplane
+# V2). On a cluster without one they apply cleanly and do nothing, which is worth
+# knowing before relying on them.
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: boltq-default-deny
+  namespace: boltq
+spec:
+  # Start from deny-all and open only what is needed. The reverse — enumerating
+  # what to block — silently permits every port added later.
+  podSelector: {}
+  policyTypes: [Ingress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: boltq-controllers
+  namespace: boltq
+spec:
+  podSelector:
+    matchLabels: { app: boltq, tier: control }
+  policyTypes: [Ingress]
+  ingress:
+    # Raft: voters and non-voters only.
+    - from:
+        - podSelector:
+            matchLabels: { app: boltq }
+      ports:
+        - { protocol: TCP, port: 9100 }
+        - { protocol: TCP, port: 9101 }
+    # Admin and cluster join: from inside the namespace only. This is the port
+    # that carries /cluster/leave.
+    - from:
+        - podSelector:
+            matchLabels: { app: boltq }
+      ports:
+        - { protocol: TCP, port: 9090 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: boltq-data
+  namespace: boltq
+spec:
+  podSelector:
+    matchLabels: { app: boltq, tier: data }
+  policyTypes: [Ingress]
+  ingress:
+    # The gateway is the one port open to the world.
+    - ports:
+        - { protocol: TCP, port: 9300 }
+    # Raft and replication: BoltQ pods only, never external.
+    - from:
+        - podSelector:
+            matchLabels: { app: boltq }
+      ports:
+        - { protocol: TCP, port: 9101 }
+        - { protocol: TCP, port: 9200 }
+    # Admin and queue TCP: inside the namespace. Widen to a specific client
+    # namespace with a namespaceSelector when applications need the queue API.
+    - from:
+        - podSelector:
+            matchLabels: { app: boltq }
+      ports:
+        - { protocol: TCP, port: 9090 }
+        - { protocol: TCP, port: 9091 }

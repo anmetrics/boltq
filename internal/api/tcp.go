@@ -9,6 +9,7 @@ import (
 	"log"
 	"net"
 	"sync"
+	"time"
 
 	"github.com/boltq/boltq/internal/broker"
 	"github.com/boltq/boltq/internal/cluster"
@@ -27,6 +28,11 @@ type TCPServer struct {
 	listener    net.Listener
 	wg          sync.WaitGroup
 	quit        chan struct{}
+
+	// conns is every connection currently being served. Shutdown closes them so
+	// their reader goroutines return; without this the wait there never ends.
+	connMu sync.Mutex
+	conns  map[net.Conn]struct{}
 }
 
 // NewTCPServer creates a new TCP server.
@@ -37,6 +43,7 @@ func NewTCPServer(b broker.BrokerIface, m *metrics.Metrics, cfg config.ServerCon
 		apiKey:    apiKey,
 		tlsConfig: cfg.TLS,
 		quit:      make(chan struct{}),
+		conns:     make(map[net.Conn]struct{}),
 	}
 }
 
@@ -68,12 +75,60 @@ func (s *TCPServer) Start(addr string) error {
 }
 
 // Shutdown gracefully stops the TCP server.
+// trackConn adds or removes a connection from the active set.
+func (s *TCPServer) trackConn(conn net.Conn, add bool) {
+	s.connMu.Lock()
+	defer s.connMu.Unlock()
+	if s.conns == nil {
+		return
+	}
+	if add {
+		s.conns[conn] = struct{}{}
+	} else {
+		delete(s.conns, conn)
+	}
+}
+
+// Shutdown stops accepting connections and closes the ones still open.
+//
+// Closing them is the whole point. Each connection is served by a goroutine
+// blocked reading from its socket, and the wait below counts those goroutines.
+// A reader blocked on a socket that nobody closes never returns, so waiting
+// without closing means Shutdown blocks until every client happens to
+// disconnect on its own — which, for the long-lived connections this server is
+// built for, is never.
+//
+// The consequence was not theoretical: SIGTERM would hang the process until the
+// orchestrator's grace period expired and killed it, on every rolling upgrade,
+// losing whatever was in flight. A graceful shutdown that is never graceful is
+// worse than none, because the deployment is written as though it works.
+//
+// The wait is also bounded. A connection stuck in a syscall that ignores Close
+// must not hold the process open forever; past the deadline the remaining
+// goroutines die with the process, which is where they were heading anyway.
 func (s *TCPServer) Shutdown() {
 	close(s.quit)
 	if s.listener != nil {
 		s.listener.Close()
 	}
-	s.wg.Wait()
+
+	s.connMu.Lock()
+	for conn := range s.conns {
+		conn.Close()
+	}
+	s.connMu.Unlock()
+
+	done := make(chan struct{})
+	go func() {
+		s.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		log.Printf("[tcp] shutdown timed out waiting for connection handlers")
+	}
 }
 
 func (s *TCPServer) acceptLoop() {
@@ -89,18 +144,20 @@ func (s *TCPServer) acceptLoop() {
 			}
 		}
 		s.wg.Add(1)
+		s.trackConn(conn, true)
 		go s.handleConn(conn)
 	}
 }
 
 func (s *TCPServer) handleConn(conn net.Conn) {
 	defer s.wg.Done()
+	defer s.trackConn(conn, false)
 	defer conn.Close()
 
 	reader := bufio.NewReaderSize(conn, 64*1024)
 	writer := bufio.NewWriterSize(conn, 64*1024)
 	authenticated := s.apiKey == "" // auto-authenticated if no key configured
-	prefetch := 0                  // 0 means no limit
+	prefetch := 0                   // 0 means no limit
 	unackedCount := 0
 	confirmMode := false
 	nextSeqNo := uint64(0)
@@ -387,21 +444,21 @@ func (s *TCPServer) handleConsumeTCP(frame protocol.Frame, prefetch *int, unacke
 				// Wrap message to include subscriber_id and ensure payload is handled as RawMessage
 				// to avoid base64 encoding of JSON payloads.
 				type streamingResponse struct {
-					ID            string            `json:"id"`
-					Topic         string            `json:"topic"`
-					Payload       json.RawMessage   `json:"payload"`
-					Headers       map[string]string `json:"headers,omitempty"`
-					Timestamp     int64             `json:"timestamp"`
-					SubscriberID  string            `json:"subscriber_id"`
+					ID           string            `json:"id"`
+					Topic        string            `json:"topic"`
+					Payload      json.RawMessage   `json:"payload"`
+					Headers      map[string]string `json:"headers,omitempty"`
+					Timestamp    int64             `json:"timestamp"`
+					SubscriberID string            `json:"subscriber_id"`
 				}
 
 				resp := streamingResponse{
-					ID:            msg.ID,
-					Topic:         msg.Topic,
-					Payload:       json.RawMessage(msg.Payload),
-					Headers:       msg.Headers,
-					Timestamp:     msg.Timestamp,
-					SubscriberID:  req.ID,
+					ID:           msg.ID,
+					Topic:        msg.Topic,
+					Payload:      json.RawMessage(msg.Payload),
+					Headers:      msg.Headers,
+					Timestamp:    msg.Timestamp,
+					SubscriberID: req.ID,
 				}
 
 				data, _ := json.Marshal(resp)

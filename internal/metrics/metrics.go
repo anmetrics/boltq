@@ -29,19 +29,19 @@ func Global() *Metrics {
 	return global
 }
 
-func (m *Metrics) IncPublished()   { atomic.AddInt64(&m.MessagesPublished, 1) }
-func (m *Metrics) IncConsumed()    { atomic.AddInt64(&m.MessagesConsumed, 1) }
-func (m *Metrics) IncAcked()       { atomic.AddInt64(&m.MessagesAcked, 1) }
-func (m *Metrics) IncNacked()      { atomic.AddInt64(&m.MessagesNacked, 1) }
-func (m *Metrics) IncRetry()       { atomic.AddInt64(&m.RetryCount, 1) }
-func (m *Metrics) IncDeadLetter()  { atomic.AddInt64(&m.DeadLetterCount, 1) }
-func (m *Metrics) IncRaftApply()   { atomic.AddInt64(&m.RaftApplyCount, 1) }
-func (m *Metrics) IncSnapshot()    { atomic.AddInt64(&m.SnapshotCount, 1) }
+func (m *Metrics) IncPublished()    { atomic.AddInt64(&m.MessagesPublished, 1) }
+func (m *Metrics) IncConsumed()     { atomic.AddInt64(&m.MessagesConsumed, 1) }
+func (m *Metrics) IncAcked()        { atomic.AddInt64(&m.MessagesAcked, 1) }
+func (m *Metrics) IncNacked()       { atomic.AddInt64(&m.MessagesNacked, 1) }
+func (m *Metrics) IncRetry()        { atomic.AddInt64(&m.RetryCount, 1) }
+func (m *Metrics) IncDeadLetter()   { atomic.AddInt64(&m.DeadLetterCount, 1) }
+func (m *Metrics) IncRaftApply()    { atomic.AddInt64(&m.RaftApplyCount, 1) }
+func (m *Metrics) IncSnapshot()     { atomic.AddInt64(&m.SnapshotCount, 1) }
 func (m *Metrics) IncLeaderChange() { atomic.AddInt64(&m.LeaderChanges, 1) }
-func (m *Metrics) IncCacheHit()      { atomic.AddInt64(&m.CacheHits, 1) }
-func (m *Metrics) IncCacheMiss()     { atomic.AddInt64(&m.CacheMisses, 1) }
-func (m *Metrics) IncCacheSet()      { atomic.AddInt64(&m.CacheSets, 1) }
-func (m *Metrics) IncCacheDelete()   { atomic.AddInt64(&m.CacheDeletes, 1) }
+func (m *Metrics) IncCacheHit()     { atomic.AddInt64(&m.CacheHits, 1) }
+func (m *Metrics) IncCacheMiss()    { atomic.AddInt64(&m.CacheMisses, 1) }
+func (m *Metrics) IncCacheSet()     { atomic.AddInt64(&m.CacheSets, 1) }
+func (m *Metrics) IncCacheDelete()  { atomic.AddInt64(&m.CacheDeletes, 1) }
 
 // Snapshot returns a copy of the current metrics.
 func (m *Metrics) Snapshot() Metrics {
@@ -109,7 +109,10 @@ func (m *Metrics) Prometheus() string {
 		promLine("boltq_cache_sets", snap.CacheSets) +
 		"# HELP boltq_cache_deletes Total cache delete operations\n" +
 		"# TYPE boltq_cache_deletes counter\n" +
-		promLine("boltq_cache_deletes", snap.CacheDeletes)
+		promLine("boltq_cache_deletes", snap.CacheDeletes) +
+		// Registered collectors are appended last so a component that fails to
+		// register cannot hide the built-in counters.
+		renderSamples(collectAll())
 }
 
 func promLine(name string, val int64) string {

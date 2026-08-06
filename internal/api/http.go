@@ -15,6 +15,8 @@ import (
 	"github.com/boltq/boltq/internal/cluster"
 	"github.com/boltq/boltq/internal/config"
 	"github.com/boltq/boltq/internal/metrics"
+	"github.com/boltq/boltq/internal/presence"
+	"github.com/boltq/boltq/internal/stream"
 	"github.com/boltq/boltq/pkg/protocol"
 )
 
@@ -25,10 +27,15 @@ type HTTPServer struct {
 	metrics     *metrics.Metrics
 	apiKey      string
 	tlsConfig   config.TLSConfig
-	clusterNode *cluster.RaftNode // nil if clustering is disabled
-	cache       *cache.Store      // nil if cache is disabled
-	defaultTTL  int64             // default TTL for cache entries in ms
+	clusterNode *cluster.RaftNode   // queue-plane group; nil if the queue plane is not clustered
+	metaNode    cluster.ControlNode // control-plane group; nil if clustering is disabled
+	controller  *cluster.Controller // nil if this node runs no controller
+	cache       *cache.Store        // nil if cache is disabled
+	defaultTTL  int64               // default TTL for cache entries in ms
 	mux         *http.ServeMux
+	messaging   MessagingStats
+	streamLog   *stream.Log        // nil unless the messaging plane is enabled
+	presenceReg *presence.Registry // nil unless presence is enabled
 	server      *http.Server
 }
 
@@ -52,6 +59,12 @@ func (s *HTTPServer) registerRoutes() {
 	s.mux.HandleFunc("/metrics", s.cors(s.handleMetrics))
 	s.mux.HandleFunc("/health", s.cors(s.handleHealth))
 
+	// Orchestrator probes. Kept separate from /health, which predates them and
+	// is what existing dashboards poll: changing its semantics would silently
+	// repurpose whatever is already watching it.
+	s.mux.HandleFunc("/livez", s.cors(s.handleLiveness))
+	s.mux.HandleFunc("/readyz", s.cors(s.handleReadiness))
+
 	// Queue management.
 	s.mux.HandleFunc("/queues/purge", s.cors(s.auth(s.handlePurgeQueue)))
 	s.mux.HandleFunc("/dead-letters/purge", s.cors(s.auth(s.handlePurgeDeadLetters)))
@@ -73,8 +86,50 @@ func (s *HTTPServer) registerRoutes() {
 	s.mux.HandleFunc("/cluster/leave", s.cors(s.auth(s.handleClusterLeave)))
 	s.mux.HandleFunc("/cluster/status", s.cors(s.auth(s.handleClusterStatus)))
 
+	// Control plane: node registration, liveness, and the replicated view of
+	// who leads what.
+	s.mux.HandleFunc("/cluster/register", s.cors(s.auth(s.handleClusterRegister)))
+	s.mux.HandleFunc("/cluster/heartbeat", s.cors(s.auth(s.handleClusterHeartbeat)))
+	s.mux.HandleFunc("/cluster/metadata", s.cors(s.auth(s.handleClusterMetadata)))
+	s.mux.HandleFunc("/cluster/topics", s.cors(s.auth(s.handleClusterCreateTopic)))
+	s.mux.HandleFunc("/cluster/meta", s.cors(s.auth(s.handleClusterMeta)))
+
+	// Peer-to-peer write routing. Cluster-internal only — see http_internal.go.
+	s.mux.HandleFunc("/internal/append", s.auth(s.handleInternalAppend))
+	s.mux.HandleFunc("/internal/presence", s.auth(s.handleInternalPresence))
+	s.mux.HandleFunc("/internal/presence/batch", s.auth(s.handleInternalPresenceBatch))
+
 	// Cache/KV store routes.
 	s.registerCacheRoutes()
+}
+
+// SetMetadataNode attaches the control-plane consensus group.
+//
+// It is separate from SetClusterNode because the two groups are separate: a
+// node commonly belongs to the control plane and not to the queue plane, which
+// is exactly the arrangement that keeps a hundred data nodes from replicating
+// every queue write in the cluster.
+func (s *HTTPServer) SetMetadataNode(n cluster.ControlNode) {
+	s.metaNode = n
+}
+
+// control returns the control-plane group, falling back to the combined node so
+// a cluster that has not yet split its groups keeps working.
+func (s *HTTPServer) control() cluster.ControlNode {
+	if s.metaNode != nil {
+		return s.metaNode
+	}
+	if s.clusterNode != nil {
+		return s.clusterNode
+	}
+	return nil
+}
+
+// ServeHTTP lets the admin API be mounted on a listener the caller owns —
+// a test server, or a process that terminates TLS elsewhere — instead of only
+// through Start.
+func (s *HTTPServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	s.mux.ServeHTTP(w, r)
 }
 
 // Start starts the HTTP server on the given address.
@@ -362,7 +417,15 @@ func (s *HTTPServer) handleConsume(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	msg := s.broker.Consume(topic)
+	// TryConsume, not Consume: Consume blocks on a condition variable until a
+	// message arrives, which in an HTTP handler means the request never returns.
+	// A single poll against an empty topic would pin a goroutine and a
+	// connection for the lifetime of the process, and enough of them exhaust
+	// the server — no authentication required beyond reaching this endpoint.
+	//
+	// The 404 below was always the intended answer for an empty queue; it was
+	// simply unreachable.
+	msg := s.broker.TryConsume(topic)
 	if msg == nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "no messages available"})
 		return
@@ -572,8 +635,13 @@ func (s *HTTPServer) handleExchangePublish(w http.ResponseWriter, r *http.Reques
 // --- Cluster Join ---
 
 type clusterJoinRequest struct {
-	NodeID   string `json:"node_id"`
-	Addr     string `json:"addr"`
+	NodeID string `json:"node_id"`
+	// Addr is the queue-group Raft address. Empty means this node runs no queue
+	// plane and should join the control plane only — the normal case for a data
+	// node in a large cluster.
+	Addr string `json:"addr"`
+	// MetaAddr is the control-group Raft address. Every node joins that group.
+	MetaAddr string `json:"meta_addr,omitempty"`
 	NonVoter bool   `json:"non_voter"` // Join as read replica (non-voter)
 }
 
@@ -582,36 +650,68 @@ func (s *HTTPServer) handleClusterJoin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	if s.clusterNode == nil {
-		writeError(w, http.StatusBadRequest, "clustering is not enabled")
-		return
-	}
+
 	var req clusterJoinRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
 	defer r.Body.Close()
-	if req.NodeID == "" || req.Addr == "" {
-		writeError(w, http.StatusBadRequest, "node_id and addr are required")
+	if req.NodeID == "" {
+		writeError(w, http.StatusBadRequest, "node_id is required")
 		return
 	}
-	var err error
+	if req.Addr == "" && req.MetaAddr == "" {
+		writeError(w, http.StatusBadRequest, "addr or meta_addr is required")
+		return
+	}
+
+	// Two groups, two memberships. A node joins the control plane always and the
+	// queue plane only if it serves queues — which is what stops a data node from
+	// receiving every queue write in the cluster.
+	joined := make([]string, 0, 2)
+
+	if req.MetaAddr != "" && s.metaNode != nil {
+		var err error
+		if req.NonVoter {
+			err = s.metaNode.JoinNonVoter(req.NodeID, req.MetaAddr)
+		} else {
+			err = s.metaNode.Join(req.NodeID, req.MetaAddr)
+		}
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		joined = append(joined, "metadata")
+	}
+
+	if req.Addr != "" && s.clusterNode != nil {
+		var err error
+		if req.NonVoter {
+			err = s.clusterNode.JoinNonVoter(req.NodeID, req.Addr)
+		} else {
+			err = s.clusterNode.Join(req.NodeID, req.Addr)
+		}
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		joined = append(joined, "queue")
+	}
+
+	if len(joined) == 0 {
+		writeError(w, http.StatusBadRequest, "no consensus group on this node accepted the join")
+		return
+	}
+
 	role := "voter"
 	if req.NonVoter {
-		err = s.clusterNode.JoinNonVoter(req.NodeID, req.Addr)
 		role = "non-voter"
-	} else {
-		err = s.clusterNode.Join(req.NodeID, req.Addr)
 	}
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "joined", "node_id": req.NodeID, "role": role})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status": "joined", "node_id": req.NodeID, "role": role, "groups": joined,
+	})
 }
-
-// --- Cluster Leave ---
 
 type clusterLeaveRequest struct {
 	NodeID string `json:"node_id"`
@@ -622,7 +722,7 @@ func (s *HTTPServer) handleClusterLeave(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	if s.clusterNode == nil {
+	if s.clusterNode == nil && s.metaNode == nil {
 		writeError(w, http.StatusBadRequest, "clustering is not enabled")
 		return
 	}
@@ -636,11 +736,27 @@ func (s *HTTPServer) handleClusterLeave(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, "node_id is required")
 		return
 	}
-	if err := s.clusterNode.Leave(req.NodeID); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+	// Leave both groups. A node removed from one but not the other lingers as a
+	// dead member forever, and in the control plane a dead voter is quorum the
+	// cluster can never reach.
+	var left []string
+	if s.metaNode != nil {
+		if err := s.metaNode.Leave(req.NodeID); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		left = append(left, "metadata")
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "removed", "node_id": req.NodeID})
+	if s.clusterNode != nil {
+		if err := s.clusterNode.Leave(req.NodeID); err != nil {
+			// The node may simply never have been a queue member, which is the
+			// normal case for a data node. Not a failure.
+			log.Printf("[http] leave queue group for %s: %v", req.NodeID, err)
+		} else {
+			left = append(left, "queue")
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "removed", "node_id": req.NodeID, "groups": left})
 }
 
 // --- Cluster Status ---

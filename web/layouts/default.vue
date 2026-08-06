@@ -13,19 +13,21 @@
       </div>
 
       <!-- Navigation -->
-      <div class="section-header mt-2">Navigation</div>
       <v-list density="compact" nav class="sidebar-nav flex-grow-1">
-        <v-list-item
-          v-for="item in items"
-          :key="item.to"
-          :to="item.to"
-          :prepend-icon="item.icon"
-          rounded="lg"
-          exact
-          class="nav-item"
-        >
-          <v-list-item-title>{{ item.title }}</v-list-item-title>
-        </v-list-item>
+        <template v-for="section in sections" :key="section.title">
+          <div class="section-header">{{ section.title }}</div>
+          <v-list-item
+            v-for="item in section.items"
+            :key="item.to"
+            :to="item.to"
+            :prepend-icon="item.icon"
+            rounded="lg"
+            exact
+            class="nav-item"
+          >
+            <v-list-item-title>{{ item.title }}</v-list-item-title>
+          </v-list-item>
+        </template>
       </v-list>
 
       <!-- Bottom -->
@@ -80,7 +82,7 @@
 </template>
 
 <script setup lang="ts">
-const { items } = useNavigation()
+const { sections } = useNavigation()
 const { isOnline } = useServerStatus()
 const { isDark, toggleTheme, initTheme } = useAppTheme()
 

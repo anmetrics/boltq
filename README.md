@@ -1,8 +1,24 @@
 # BoltQ
 
-High-performance message queue server written in Go. Built for low latency, high throughput, and production clustering.
+High-performance message queue **and** messaging backbone, written in Go.
+
+BoltQ is two independent subsystems sharing a process:
+
+| | For | Enabled by |
+|---|---|---|
+| **Queue** | Jobs and events from trusted backend services. Work queues, pub/sub, AMQP-style exchanges, Raft-replicated. | always on |
+| **Messaging** | Chat from untrusted end-user devices. Partitioned replayable log, per-user auth, WebSocket gateway, presence, offline push, log replication. | `messaging.stream.enabled` |
+
+Neither affects the other. Run one, or both. **The messaging subsystem is off by
+default**, so an existing queue deployment upgrades with no behaviour change.
+
+> **Before running the messaging subsystem in production**, read
+> [docs/STATUS.md](docs/STATUS.md). It states plainly what is verified, what is
+> missing, and which gaps will bite you — including two that cost data today.
 
 ## Features
+
+### Queue subsystem
 
 - **Work Queue** — 1 message → 1 consumer (like RabbitMQ)
 - **Pub/Sub** — 1 message → all subscribers (like Redis Pub/Sub)
@@ -26,6 +42,22 @@ High-performance message queue server written in Go. Built for low latency, high
 - **TLS Encryption** — full end-to-end encryption for TCP and HTTP
 - **In-Memory KV Store** — built-in cache with TTL, pattern matching, atomic increment
 - **Lock-free ring buffer** — high-performance internal queue
+
+### Messaging subsystem
+
+- **Partitioned log** — append-only, replayable, gap-free sequences, sparse index, segment retention
+- **Per-conversation ordering** — conversation ID is the partition key, so order is structural
+- **Multi-device cursors** — one user, N devices, N independent read positions
+- **Per-user auth** — HMAC-SHA256 tokens, topic ACL with wildcards and membership gating
+- **WebSocket gateway** — resumable sessions, history paging, live tailing
+- **Presence registry** — user → device → node, TTL-based, sharded
+- **Idempotent sends** — `client_msg_id` dedup, so a mobile retry never duplicates
+- **Adaptive fan-out** — pointers per recipient for small chats, read-directly for big channels
+- **Ephemeral signals** — typing/presence on a separate rate-limited memory-only path
+- **Offline push** — cursor-tracked webhook dispatch, at-least-once, bounded retries
+- **Log replication** — leader/follower with quorum acknowledgement (`min_in_sync`)
+
+Full documentation: **[docs/README.md](docs/README.md)**
 
 ## Performance
 
@@ -436,6 +468,28 @@ Node ID auto-generated from hostname when not set.
 | `seeds` | []string | `[]` | Seed node HTTP addresses for discovery |
 | `non_voter` | bool | `false` | Join as non-voter (read replica) |
 | `snapshot_threshold` | uint64 | `8192` | Log entries before snapshot |
+
+## Messaging Quick Start
+
+```bash
+export BOLTQ_SIGNING_KEY="$(openssl rand -hex 32)"
+./bin/boltq-server -config configs/chat.json
+```
+
+```json
+{
+  "messaging": {
+    "stream":   { "enabled": true, "sync_on_append": true },
+    "identity": { "enabled": true,
+                  "keys": [{ "id": "k1", "secret_env": "BOLTQ_SIGNING_KEY" }] },
+    "gateway":  { "enabled": true, "port": 9095 }
+  }
+}
+```
+
+Then connect a client to `ws://host:9095/ws?token=<jwt>`. See
+[Building a chat app](docs/guides/building-a-chat-app.md) for the full walkthrough
+and [Gateway protocol](docs/reference/gateway-protocol.md) for every frame.
 
 ## Project Structure
 

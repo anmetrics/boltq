@@ -15,7 +15,7 @@ func TestConsumerPrefetch(t *testing.T) {
 	b := broker.New(broker.Config{QueueCap: 100})
 	m := metrics.Global()
 	server := NewTCPServer(b, m, config.ServerConfig{}, "")
-	
+
 	addr := "127.0.0.1:9092"
 	if err := server.Start(addr); err != nil {
 		t.Fatal(err)

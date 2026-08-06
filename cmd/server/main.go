@@ -6,9 +6,11 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -21,6 +23,7 @@ import (
 	"github.com/boltq/boltq/internal/metrics"
 	"github.com/boltq/boltq/internal/scheduler"
 	"github.com/boltq/boltq/internal/storage"
+	"github.com/boltq/boltq/internal/streamctl"
 	"github.com/boltq/boltq/internal/wal"
 	"github.com/boltq/boltq/pkg/protocol"
 )
@@ -78,6 +81,25 @@ func main() {
 	if v := os.Getenv("BOLTQ_BOOTSTRAP"); v == "true" || v == "1" {
 		cfg.Cluster.Bootstrap = true
 	}
+	// BOLTQ_BOOTSTRAP_NODE_ID names the one node that may bootstrap, so every
+	// replica in a set can share an identical environment and still have
+	// exactly one of them form the cluster.
+	//
+	// The alternative — a shell conditional in the container command — needs a
+	// shell in the image, which rules out a distroless base, and puts a
+	// correctness rule that decides whether the cluster splits into a YAML
+	// string comparison nobody tests.
+	if v := os.Getenv("BOLTQ_BOOTSTRAP_NODE_ID"); v != "" {
+		hostname, _ := os.Hostname()
+		self := cfg.Cluster.NodeID
+		if self == "" {
+			self = hostname
+		}
+		cfg.Cluster.Bootstrap = v == self
+		if cfg.Cluster.Bootstrap {
+			log.Printf("[server] this node (%s) is the designated bootstrap node", self)
+		}
+	}
 	if v := os.Getenv("BOLTQ_CLUSTER_PEERS"); v != "" {
 		cfg.Cluster.Peers = strings.Split(v, ",")
 	}
@@ -86,6 +108,21 @@ func main() {
 	}
 	if v := os.Getenv("BOLTQ_NON_VOTER"); v == "true" || v == "1" {
 		cfg.Cluster.NonVoter = true
+	}
+	if v := os.Getenv("BOLTQ_META_RAFT_ADDR"); v != "" {
+		cfg.Cluster.MetaRaftAddr = v
+	}
+	if v := os.Getenv("BOLTQ_QUEUE_PLANE"); v == "true" || v == "1" {
+		cfg.Cluster.QueuePlane = true
+	}
+	if v := os.Getenv("BOLTQ_REBALANCE"); v == "true" || v == "1" {
+		cfg.Cluster.Rebalance = true
+	}
+	if v := os.Getenv("BOLTQ_REPLICATION_FACTOR"); v != "" {
+		fmt.Sscanf(v, "%d", &cfg.Cluster.ReplicationFactor)
+	}
+	if v := os.Getenv("BOLTQ_SESSION_TIMEOUT_SECONDS"); v != "" {
+		fmt.Sscanf(v, "%d", &cfg.Cluster.SessionTimeoutSeconds)
 	}
 
 	// Cache env overrides.
@@ -100,6 +137,9 @@ func main() {
 			cfg.Cache.MaxKeys = maxKeys
 		}
 	}
+
+	// Messaging (stream/gateway/presence/push) env overrides.
+	config.ApplyMessagingEnv(&cfg.Messaging)
 
 	// Auto-generate node ID from hostname if not set.
 	if cfg.Cluster.Enabled && cfg.Cluster.NodeID == "" {
@@ -142,11 +182,11 @@ func main() {
 			log.Printf("[server] WAL recovery warning: %v", err)
 		} else if len(records) > 0 {
 			log.Printf("[server] processsing %d records from WAL for recovery", len(records))
-			
+
 			// Process records in order, keeping track of what's still pending
 			msgs := make(map[string]*protocol.Message)
 			order := []string{}
-			
+
 			for _, rec := range records {
 				switch rec.Type {
 				case wal.RecordPublish:
@@ -159,7 +199,7 @@ func main() {
 					b.ReplayMetadata(rec.Type, rec.Metadata)
 				}
 			}
-			
+
 			recoveredCount := 0
 			for _, id := range order {
 				if msg, ok := msgs[id]; ok {
@@ -181,16 +221,95 @@ func main() {
 	// Determine the active broker (local or cluster-wrapped).
 	var activeBroker broker.BrokerIface = b
 	var raftNode *cluster.RaftNode
+	var controller *cluster.Controller
+
+	var metaNode *cluster.MetadataNode
 
 	if cfg.Cluster.Enabled {
-		var err error
-		raftNode, err = cluster.NewRaftNode(cfg.Cluster, b)
-		if err != nil {
-			log.Fatalf("[server] failed to start cluster: %v", err)
+		// The control plane comes up first and on every node. It is the group
+		// that says which partitions this node leads, so nothing else can be
+		// decided without it.
+		metaAddr := cfg.Cluster.MetaRaftAddr
+		if metaAddr == "" {
+			metaAddr = derivedMetaAddr(cfg.Cluster.RaftAddr)
 		}
-		activeBroker = cluster.NewClusterBroker(raftNode, b)
-		log.Printf("[server] cluster mode enabled (node=%s, raft=%s, bootstrap=%v, non_voter=%v)",
-			cfg.Cluster.NodeID, cfg.Cluster.RaftAddr, cfg.Cluster.Bootstrap, cfg.Cluster.NonVoter)
+		var err error
+		metaNode, err = cluster.NewMetadataNode(cfg.Cluster, metaAddr)
+		if err != nil {
+			log.Fatalf("[server] failed to start control plane: %v", err)
+		}
+		log.Printf("[server] control plane enabled (node=%s, meta_raft=%s, bootstrap=%v)",
+			cfg.Cluster.NodeID, metaAddr, cfg.Cluster.Bootstrap)
+
+		// The queue plane is a separate group, and opt-in. A data node that
+		// serves only the messaging plane has no reason to replicate, store and
+		// apply every queue write committed anywhere in the cluster.
+		if cfg.Cluster.QueuePlane {
+			raftNode, err = cluster.NewRaftNode(cfg.Cluster, b)
+			if err != nil {
+				log.Fatalf("[server] failed to start queue plane: %v", err)
+			}
+			activeBroker = cluster.NewClusterBroker(raftNode, b)
+			log.Printf("[server] queue plane clustered (raft=%s)", cfg.Cluster.RaftAddr)
+		} else {
+			log.Printf("[server] queue plane is local to this node (set cluster.queue_plane to replicate it)")
+		}
+
+		// Every node starts a controller; only the one that is Raft leader acts.
+		// Starting it everywhere is what makes controller failover instant —
+		// there is no election to run and no process to start, the new leader's
+		// controller simply finds itself in charge on its next sweep.
+		controller = cluster.NewController(metaNode, cluster.ControllerConfig{
+			SessionTimeout:           cfg.Cluster.SessionTimeout(15 * time.Second),
+			PreferredLeaderRebalance: true,
+			Rebalance:                cfg.Cluster.Rebalance,
+			ReplicationFactor:        cfg.Cluster.ReplicationFactor,
+			MaxConcurrentMoves:       cfg.Cluster.MaxConcurrentMoves,
+		})
+		controller.Start()
+		// Cluster health is exposed on /metrics from here: partitions offline,
+		// under-replicated, and how leadership is spread. These are the numbers
+		// worth alerting on.
+		cluster.RegisterMetrics(metaNode.Metadata(), cfg.Cluster.NodeID)
+		if cfg.Cluster.Rebalance {
+			log.Printf("[server] replica rebalancing enabled (rf=%d, max_concurrent_moves=%d)",
+				cfg.Cluster.ReplicationFactor, cfg.Cluster.MaxConcurrentMoves)
+		}
+	}
+
+	// Build the messaging stack (partitioned log, presence, gateway, push).
+	// It is independent of the queue broker above: a deployment may run either,
+	// or both, and a failure here must not silently degrade into a server that
+	// looks healthy while serving no chat traffic.
+	nodeID := cfg.Cluster.NodeID
+	if nodeID == "" {
+		hostname, _ := os.Hostname()
+		nodeID = hostname
+	}
+	// The agent is built before the messaging stack because the stack's
+	// reconciler submits ISR reports through it.
+	var agent *cluster.Agent
+	if metaNode != nil {
+		agent = cluster.NewAgent(metaNode, cluster.AgentConfig{
+			NodeID:      cfg.Cluster.NodeID,
+			AdminAddr:   advertisedAddr(cfg.Server.Host, cfg.Server.HTTPPort),
+			RaftAddr:    cfg.Cluster.RaftAddr,
+			StreamAddr:  advertisedListen(cfg.Messaging.Replication.Listen),
+			GatewayAddr: advertisedAddr(cfg.Server.Host, cfg.Messaging.Gateway.Port),
+			Rack:        cfg.Messaging.Presence.Region,
+			Seeds:       resolveSeeds(*joinAddr, cfg.Cluster.Seeds),
+			APIKey:      cfg.Security.APIKey,
+			Interval:    cfg.Cluster.SessionTimeout(15*time.Second) / 3,
+		})
+	}
+
+	var metaApplier streamctl.Applier
+	if agent != nil {
+		metaApplier = agent
+	}
+	messaging, err := buildMessaging(cfg, nodeID, metaNode, metaApplier)
+	if err != nil {
+		log.Fatalf("[server] failed to start messaging subsystem: %v", err)
 	}
 
 	// Start scheduler.
@@ -242,8 +361,29 @@ func main() {
 	if raftNode != nil {
 		httpServer.SetClusterNode(raftNode)
 	}
+	if metaNode != nil {
+		httpServer.SetMetadataNode(metaNode)
+		httpServer.SetController(controller)
+	}
 	if kvStore != nil {
 		httpServer.SetCache(kvStore, cfg.Cache.DefaultTTL)
+	}
+	if messaging != nil {
+		httpServer.SetMessagingStats(&messagingStatsAdapter{st: messaging})
+		// Lets peers deliver writes for partitions this node leads.
+		httpServer.SetStreamLog(messaging.Log)
+		// Lets peers read and report presence for shards this node owns.
+		httpServer.SetPresenceRegistry(messaging.Presence)
+		// Without a dedicated gateway port, share the admin listener. Fine for
+		// development; production should separate the two planes.
+		if cfg.Messaging.Gateway.Enabled && cfg.Messaging.Gateway.Port == 0 {
+			path := cfg.Messaging.Gateway.Path
+			if path == "" {
+				path = "/ws"
+			}
+			httpServer.Handle(path, messaging.Gateway)
+			log.Printf("[server] gateway mounted on admin HTTP server at %s", path)
+		}
 	}
 	httpAddr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.HTTPPort)
 	go func() {
@@ -259,10 +399,30 @@ func main() {
 
 	// Auto-join cluster if not bootstrap and have seeds.
 	if cfg.Cluster.Enabled && !cfg.Cluster.Bootstrap && len(seeds) > 0 {
+		queueAddr := ""
+		if cfg.Cluster.QueuePlane {
+			queueAddr = cfg.Cluster.RaftAddr
+		}
+		metaAddr := cfg.Cluster.MetaRaftAddr
+		if metaAddr == "" {
+			metaAddr = derivedMetaAddr(cfg.Cluster.RaftAddr)
+		}
 		go func() {
 			time.Sleep(2 * time.Second) // give local raft time to start
-			discoverAndJoin(seeds, cfg.Cluster.NodeID, cfg.Cluster.RaftAddr, cfg.Cluster.NonVoter)
+			discoverAndJoin(seeds, cfg.Cluster.NodeID, queueAddr, metaAddr,
+				cfg.Security.APIKey, cfg.Cluster.NonVoter)
 		}()
+	}
+
+	// Register with the control plane and start heartbeating.
+	//
+	// Joining Raft and registering as a broker are different facts. Raft
+	// membership says "this node participates in consensus"; registration says
+	// "this node can host partitions, and here is where to reach it". A node
+	// can be the former without being the latter — a dedicated controller holds
+	// no partitions at all.
+	if agent != nil {
+		agent.Start()
 	}
 
 	// Wait for shutdown signal.
@@ -273,10 +433,22 @@ func main() {
 
 	// Graceful leave: remove self from cluster before shutting down.
 	if raftNode != nil && !cfg.Cluster.Bootstrap && len(seeds) > 0 {
-		gracefulLeave(seeds, cfg.Cluster.NodeID)
+		gracefulLeave(seeds, cfg.Cluster.NodeID, cfg.Security.APIKey)
 	}
 
 	close(cacheQuit)
+	// The agent stops first: a node on its way out should stop claiming to be
+	// alive before it stops being able to serve, so the controller fences it
+	// promptly instead of routing to a corpse.
+	if agent != nil {
+		agent.Close()
+	}
+	if controller != nil {
+		controller.Close()
+	}
+	if messaging != nil {
+		messaging.Close()
+	}
 	tcpServer.Shutdown()
 	httpServer.Shutdown()
 	sched.Stop()
@@ -286,8 +458,72 @@ func main() {
 	if raftNode != nil {
 		raftNode.Shutdown()
 	}
+	if metaNode != nil {
+		metaNode.Shutdown()
+	}
 	b.Close()
 	log.Println("[server] BoltQ stopped")
+}
+
+// advertisedAddr builds the address other nodes should use to reach a listener
+// on this host.
+//
+// A listener bound to 0.0.0.0 accepts from everywhere but is meaningless as an
+// address to dial, so the hostname is substituted — this is what a node
+// publishes about itself, not what it binds to. Port 0 means the listener is
+// not running, and an empty string is the honest way to say so.
+func advertisedAddr(host string, port int) string {
+	if port <= 0 {
+		return ""
+	}
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		h, err := os.Hostname()
+		if err != nil || h == "" {
+			return ""
+		}
+		host = h
+	}
+	return fmt.Sprintf("%s:%d", host, port)
+}
+
+// derivedMetaAddr places the control-plane listener one port above the queue
+// group's.
+//
+// Deriving it means an existing config keeps working without naming a port it
+// never had to name before, and the relationship stays obvious in a `ss -ltn`:
+// 9100 is queue consensus, 9101 is control consensus.
+func derivedMetaAddr(raftAddr string) string {
+	host, portStr, err := net.SplitHostPort(raftAddr)
+	if err != nil {
+		return "0.0.0.0:9101"
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		return "0.0.0.0:9101"
+	}
+	return net.JoinHostPort(host, strconv.Itoa(port+1))
+}
+
+// advertisedListen converts a bind address into one a peer can dial.
+//
+// "0.0.0.0:9200" is a perfectly good thing to listen on and a useless thing to
+// publish: a follower that dials it reaches itself. Only the port survives; the
+// host becomes this node's own name, which is what the rest of the cluster
+// resolves. Empty in, empty out — a listener that is not configured is not
+// advertised.
+func advertisedListen(listen string) string {
+	if listen == "" {
+		return ""
+	}
+	host, portStr, err := net.SplitHostPort(listen)
+	if err != nil {
+		return ""
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		return ""
+	}
+	return advertisedAddr(host, port)
 }
 
 // resolveSeeds builds a list of seed addresses from --join flag, BOLTQ_JOIN_ADDR env, and config seeds.
@@ -324,10 +560,11 @@ func resolveSeeds(joinFlag string, configSeeds []string) []string {
 // discoverAndJoin tries each seed address to find the leader and join the cluster.
 // Retries with exponential backoff — essential for orchestrated environments where
 // leader may not be ready yet.
-func discoverAndJoin(seeds []string, nodeID, raftAddr string, nonVoter bool) {
+func discoverAndJoin(seeds []string, nodeID, queueAddr, metaAddr, apiKey string, nonVoter bool) {
 	payload := map[string]interface{}{
 		"node_id":   nodeID,
-		"addr":      raftAddr,
+		"addr":      queueAddr,
+		"meta_addr": metaAddr,
 		"non_voter": nonVoter,
 	}
 	body, _ := json.Marshal(payload)
@@ -344,7 +581,19 @@ func discoverAndJoin(seeds []string, nodeID, raftAddr string, nonVoter bool) {
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		for _, seed := range seeds {
 			url := fmt.Sprintf("http://%s/cluster/join", seed)
-			resp, err := client.Post(url, "application/json", bytes.NewReader(body))
+			req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+			if err != nil {
+				continue
+			}
+			req.Header.Set("Content-Type", "application/json")
+			// /cluster/join sits behind the same API key as every other control
+			// endpoint. Omitting it means every join is rejected with 401 the
+			// moment a key is configured — which is to say, in any deployment
+			// that is not wide open.
+			if apiKey != "" {
+				req.Header.Set("X-API-Key", apiKey)
+			}
+			resp, err := client.Do(req)
 			if err != nil {
 				continue // seed unreachable, try next
 			}
@@ -368,13 +617,21 @@ func discoverAndJoin(seeds []string, nodeID, raftAddr string, nonVoter bool) {
 }
 
 // gracefulLeave notifies the leader to remove this node before shutdown.
-func gracefulLeave(seeds []string, nodeID string) {
+func gracefulLeave(seeds []string, nodeID, apiKey string) {
 	body, _ := json.Marshal(map[string]string{"node_id": nodeID})
 	client := &http.Client{Timeout: 5 * time.Second}
 
 	for _, seed := range seeds {
 		url := fmt.Sprintf("http://%s/cluster/leave", seed)
-		resp, err := client.Post(url, "application/json", bytes.NewReader(body))
+		req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+		if err != nil {
+			continue
+		}
+		req.Header.Set("Content-Type", "application/json")
+		if apiKey != "" {
+			req.Header.Set("X-API-Key", apiKey)
+		}
+		resp, err := client.Do(req)
 		if err != nil {
 			continue
 		}

@@ -1,0 +1,267 @@
+# BoltQ data tier — stream log, replication, and the client-facing gateway.
+#
+# These pods hold the partitions and terminate user WebSocket connections. They
+# join Raft as non-voters: they receive the metadata that tells them what to lead
+# and what to replicate, without slowing consensus by voting on it.
+#
+# A StatefulSet, not a Deployment, and the reason is not the disk. It is the
+# identity: a node's ID is what the control plane keys partition assignments and
+# ISR membership by. Deployment pods get a new random name on every restart, so
+# each restart would appear as a brand-new node while the old one lingered in
+# every replica set it was ever placed in.
+#
+# The gateway runs here, on the pods that hold the log. A client may land on any
+# of them: reads are served from the local replica, and a write for a partition
+# this node does not lead is forwarded to the node that does. Redirecting the
+# client instead would not work — one chat socket subscribes to conversations
+# whose partitions are led by different nodes, so there is no single node to
+# redirect it to.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: boltq-data
+  namespace: boltq
+  labels: { app: boltq, tier: data }
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  ports:
+    - { name: http, port: 9090 }
+    - { name: tcp, port: 9091 }
+    - { name: meta-raft, port: 9101 }
+    - { name: replication, port: 9200 }
+    - { name: gateway, port: 9300 }
+  selector: { app: boltq, tier: data }
+---
+# The only Service that may face the internet, and it carries the gateway port
+# alone. The admin API on 9090 exposes /cluster/join and /cluster/leave; putting
+# it behind the same LoadBalancer would let anyone on the internet remove nodes
+# from the cluster.
+apiVersion: v1
+kind: Service
+metadata:
+  name: boltq-gateway
+  namespace: boltq
+  labels: { app: boltq, tier: data }
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+spec:
+  type: LoadBalancer
+  # WebSocket sessions are long-lived and carry per-connection state; sending a
+  # reconnect back to the same node preserves its presence and subscriptions.
+  sessionAffinity: ClientIP
+  externalTrafficPolicy: Local # Preserves the client IP for rate limiting.
+  ports:
+    - { name: gateway, port: 443, targetPort: 9300 }
+  selector: { app: boltq, tier: data }
+---
+# Internal-only admin endpoint. ClusterIP, never LoadBalancer.
+apiVersion: v1
+kind: Service
+metadata:
+  name: boltq-admin
+  namespace: boltq
+  labels: { app: boltq, tier: data }
+spec:
+  type: ClusterIP
+  ports:
+    - { name: http, port: 9090 }
+    - { name: tcp, port: 9091 }
+  selector: { app: boltq, tier: data }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: boltq-data
+  namespace: boltq
+spec:
+  # With replication factor 3, losing one replica leaves two — enough for
+  # min_in_sync 2. Losing two at once takes partitions offline.
+  maxUnavailable: 1
+  selector:
+    matchLabels: { app: boltq, tier: data }
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: boltq-data
+  namespace: boltq
+spec:
+  serviceName: boltq-data
+  replicas: 3
+  podManagementPolicy: Parallel
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels: { app: boltq, tier: data }
+  template:
+    metadata:
+      labels: { app: boltq, tier: data }
+    spec:
+      serviceAccountName: boltq
+      # Long enough to drain WebSocket sessions and fsync cursors. Cutting this
+      # short costs users redelivered messages on reconnect.
+      terminationGracePeriodSeconds: 120
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile: { type: RuntimeDefault }
+      affinity:
+        podAntiAffinity:
+          # Preferred rather than required: unlike voters, data pods scale past
+          # the node count, and a hard rule would leave them Pending. Replica
+          # placement across failure domains is the control plane's job.
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels: { app: boltq, tier: data }
+                topologyKey: kubernetes.io/hostname
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels: { app: boltq, tier: data }
+      containers:
+        - name: boltq
+          image: boltq:0.1.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - { containerPort: 9090, name: http }
+            - { containerPort: 9091, name: tcp }
+            - { containerPort: 9101, name: meta-raft }
+            - { containerPort: 9200, name: replication }
+            - { containerPort: 9300, name: gateway }
+          envFrom:
+            - configMapRef: { name: boltq-config }
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef: { fieldPath: metadata.name }
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef: { fieldPath: metadata.namespace }
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef: { fieldPath: spec.nodeName }
+            - name: BOLTQ_CLUSTER_ENABLED
+              value: "true"
+            # Non-voter: receives replicated metadata, does not vote. This is
+            # what lets the data tier scale to hundreds of nodes without making
+            # every metadata commit slower.
+            - name: BOLTQ_NON_VOTER
+              value: "true"
+            - name: BOLTQ_NODE_ID
+              value: "$(POD_NAME)"
+            - name: BOLTQ_META_RAFT_ADDR
+              value: "$(POD_NAME).boltq-data.$(POD_NAMESPACE).svc.cluster.local:9101"
+            # No BOLTQ_QUEUE_PLANE. A data node follows the control plane to
+            # learn what it leads, and never replicates a byte of queue state —
+            # which is what lets this tier scale to hundreds of nodes without
+            # making the queue plane more expensive with each one.
+            - name: BOLTQ_SEEDS
+              value: >-
+                boltq-controllers-0.boltq-controllers.$(POD_NAMESPACE).svc.cluster.local:9090,boltq-controllers-1.boltq-controllers.$(POD_NAMESPACE).svc.cluster.local:9090,boltq-controllers-2.boltq-controllers.$(POD_NAMESPACE).svc.cluster.local:9090
+            - name: BOLTQ_API_KEY
+              valueFrom:
+                secretKeyRef: { name: boltq-secrets, key: api-key }
+
+            # --- messaging plane ---
+            - name: BOLTQ_STREAM_ENABLED
+              value: "true"
+            # Durability comes from replication, not from fsync.
+            #
+            # Measured on this codebase: fsync-per-append costs ~25ms, against
+            # ~2µs without — four orders of magnitude, or roughly 40 writes per
+            # second per node. No amount of hardware makes that a chat system.
+            #
+            # min_in_sync=2 means an acknowledged record is in the page cache of
+            # two machines before the sender is told it succeeded. That survives
+            # a process crash and a single machine failure, which is what the
+            # guarantee is for. fsync-per-append additionally survives *both*
+            # replicas losing power in the same instant — the one failure a
+            # replicated system is already built to make unlikely, bought at a
+            # price that makes the system unusable.
+            #
+            # This is the same trade Kafka makes, and for the same reason.
+            - name: BOLTQ_STREAM_SYNC_ON_APPEND
+              value: "false"
+            - name: BOLTQ_REPLICATION_MIN_IN_SYNC
+              value: "2"
+            - name: BOLTQ_GATEWAY_ENABLED
+              value: "true"
+            # A dedicated port. With this unset the gateway mounts on the admin
+            # server, which would put end-user traffic and /cluster/leave on the
+            # same listener.
+            - name: BOLTQ_GATEWAY_PORT
+              value: "9300"
+            - name: BOLTQ_GATEWAY_PATH
+              value: "/ws"
+            - name: BOLTQ_PRESENCE_REGION
+              value: "$(NODE_NAME)"
+
+            # --- replication ---
+            # The listener is configured and the secret is in place, but
+            # replication stays off until the control plane can assign roles:
+            # role is still static config today, and a StatefulSet cannot give
+            # pod-0 "leader" and the rest "follower" without hardcoding a
+            # leadership decision that then never fails over. See item 1 in
+            # docs/architecture-ha.md.
+            - name: BOLTQ_REPLICATION_ENABLED
+              value: "false"
+            - name: BOLTQ_REPLICATION_LISTEN
+              value: "0.0.0.0:9200"
+            - name: BOLTQ_REPLICATION_SECRET
+              valueFrom:
+                secretKeyRef: { name: boltq-secrets, key: replication-secret }
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/boltq }
+            - { name: tmp, mountPath: /tmp }
+          startupProbe:
+            httpGet: { path: /livez, port: 9090 }
+            periodSeconds: 3
+            failureThreshold: 60 # Log recovery on a large partition set is slow.
+          livenessProbe:
+            httpGet: { path: /livez, port: 9090 }
+            periodSeconds: 10
+            failureThreshold: 6
+          readinessProbe:
+            httpGet: { path: /readyz, port: 9090 }
+            periodSeconds: 5
+            failureThreshold: 3
+          lifecycle:
+            preStop:
+              exec:
+                # Stop taking new connections before the process is signalled,
+                # so in-flight sessions drain instead of being cut.
+                command: ["/bin/sh", "-c", "sleep 10"]
+          resources:
+            requests: { cpu: "2", memory: 4Gi }
+            limits: { memory: 8Gi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+      volumes:
+        - name: tmp
+          emptyDir: {}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        # storageClassName: fast-ssd
+        resources:
+          requests: { storage: 200Gi }
+---
+# Autoscaling the data tier is deliberately omitted.
+#
+# Adding a pod does not add capacity on its own: a new node holds no partitions
+# until the control plane places replicas on it and they finish catching up.
+# A CPU-triggered HPA would add pods that serve nothing during a load spike and
+# remove pods that hold the only in-sync copy of a partition during a lull.
+# Scale this tier deliberately, together with a partition reassignment.

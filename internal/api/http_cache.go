@@ -58,10 +58,10 @@ func (s *HTTPServer) handleCacheGet(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"key":           entry.Key,
-		"value":         value,
-		"ttl":           entry.RemainingTTL(),
-		"created_at":    entry.CreatedAt,
+		"key":        entry.Key,
+		"value":      value,
+		"ttl":        entry.RemainingTTL(),
+		"created_at": entry.CreatedAt,
 	})
 }
 

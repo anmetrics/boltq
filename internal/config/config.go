@@ -16,14 +16,15 @@ type Config struct {
 	Performance PerformanceConfig `json:"performance"`
 	Security    SecurityConfig    `json:"security"`
 	Cluster     ClusterConfig     `json:"cluster"`
+	Messaging   MessagingConfig   `json:"messaging"`
 }
 
 // CacheConfig holds KV store / cache layer configuration.
 type CacheConfig struct {
-	Enabled     bool  `json:"enabled"`
-	MaxKeys     int   `json:"max_keys"`      // 0 = unlimited
-	DefaultTTL  int64 `json:"default_ttl_ms"` // default TTL in ms, 0 = no expiry
-	CleanupSec  int   `json:"cleanup_sec"`    // expired key cleanup interval in seconds
+	Enabled    bool  `json:"enabled"`
+	MaxKeys    int   `json:"max_keys"`       // 0 = unlimited
+	DefaultTTL int64 `json:"default_ttl_ms"` // default TTL in ms, 0 = no expiry
+	CleanupSec int   `json:"cleanup_sec"`    // expired key cleanup interval in seconds
 }
 
 // ClusterConfig holds Raft clustering configuration.
@@ -34,9 +35,59 @@ type ClusterConfig struct {
 	RaftDir           string   `json:"raft_dir"`
 	Bootstrap         bool     `json:"bootstrap"`
 	Peers             []string `json:"peers"`
-	Seeds             []string `json:"seeds"`               // Seed node HTTP addresses for auto-discovery (e.g., ["10.0.0.1:9090","10.0.0.2:9090"])
-	NonVoter          bool     `json:"non_voter"`            // Join as non-voter (read replica) — scales without affecting consensus
+	Seeds             []string `json:"seeds"`     // Seed node HTTP addresses for auto-discovery (e.g., ["10.0.0.1:9090","10.0.0.2:9090"])
+	NonVoter          bool     `json:"non_voter"` // Join as non-voter (read replica) — scales without affecting consensus
 	SnapshotThreshold uint64   `json:"snapshot_threshold"`
+
+	// SessionTimeoutSeconds is how long a node may go without heartbeating
+	// before the controller fences it and moves its partition leaderships.
+	//
+	// It is the single most consequential tuning knob in the control plane.
+	// Too low and an ordinary GC pause triggers a failover that costs every
+	// follower a truncation check; too high and writes to a dead node's
+	// partitions stall for exactly that long. 15s is a deliberate default:
+	// comfortably longer than a stop-the-world pause, comfortably shorter than
+	// a user noticing. Zero means the default.
+	SessionTimeoutSeconds int `json:"session_timeout_seconds"`
+
+	// MetaRaftAddr is the control-plane consensus listener. It is a second Raft
+	// group, separate from RaftAddr, and that separation is the point: a node
+	// joins the control plane to learn what it leads, without receiving every
+	// queue write committed anywhere in the cluster.
+	//
+	// Empty derives it from RaftAddr's port plus one, so an existing config
+	// keeps working without naming a port it never had to name before.
+	MetaRaftAddr string `json:"meta_raft_addr"`
+
+	// QueuePlane enables the queue-plane consensus group on this node. Data
+	// nodes in a large cluster leave it off: they serve the messaging plane and
+	// have no reason to replicate queue state.
+	QueuePlane bool `json:"queue_plane"`
+
+	// Rebalance lets the controller move replicas toward even load when brokers
+	// join or leave.
+	//
+	// Off by default, and deliberately so: a move copies an entire partition
+	// across the network, and that must be something an operator chose, not
+	// something that starts because clustering was enabled. Turn it on once the
+	// cluster is stable and you are watching it.
+	Rebalance bool `json:"rebalance"`
+
+	// ReplicationFactor is how many copies of each partition to place. Two
+	// means one failure leaves no redundancy; three is the lowest number that
+	// survives losing a node without losing the guarantee.
+	ReplicationFactor int `json:"replication_factor"`
+
+	// MaxConcurrentMoves bounds partitions relocating at once.
+	MaxConcurrentMoves int `json:"max_concurrent_moves"`
+}
+
+// SessionTimeout returns the configured fencing timeout, or fallback when unset.
+func (c ClusterConfig) SessionTimeout(fallback time.Duration) time.Duration {
+	if c.SessionTimeoutSeconds <= 0 {
+		return fallback
+	}
+	return time.Duration(c.SessionTimeoutSeconds) * time.Second
 }
 
 type ServerConfig struct {
@@ -102,9 +153,9 @@ func Default() *Config {
 		},
 		Cache: CacheConfig{
 			Enabled:    true,
-			MaxKeys:    0,         // unlimited
-			DefaultTTL: 0,         // no expiry
-			CleanupSec: 10,        // cleanup every 10 seconds
+			MaxKeys:    0,  // unlimited
+			DefaultTTL: 0,  // no expiry
+			CleanupSec: 10, // cleanup every 10 seconds
 		},
 		Cluster: ClusterConfig{
 			Enabled:           false,
@@ -112,6 +163,7 @@ func Default() *Config {
 			RaftDir:           "./data/raft",
 			SnapshotThreshold: 8192,
 		},
+		Messaging: DefaultMessaging(),
 	}
 }
 
